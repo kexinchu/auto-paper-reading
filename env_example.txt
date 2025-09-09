@@ -1,0 +1,22 @@
+# 邮件配置示例
+# 复制此文件为 .env 并填入真实配置
+
+# Gmail配置示例
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+SENDER_EMAIL=your_email@gmail.com
+SENDER_PASSWORD=your_app_password
+RECIPIENT_EMAIL=your_email@gmail.com
+
+# 其他邮箱配置示例
+# 163邮箱
+# SMTP_SERVER=smtp.163.com
+# SMTP_PORT=25
+
+# QQ邮箱
+# SMTP_SERVER=smtp.qq.com
+# SMTP_PORT=587
+
+# Outlook
+# SMTP_SERVER=smtp-mail.outlook.com
+# SMTP_PORT=587

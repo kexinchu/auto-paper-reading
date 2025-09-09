@@ -1,0 +1,16 @@
+requests==2.31.0
+beautifulsoup4==4.12.2
+lxml==4.9.3
+PyYAML==6.0.1
+schedule==1.2.0
+sentence-transformers==2.2.2
+arxiv==2.1.0
+feedparser==6.0.10
+python-dotenv==1.0.0
+smtplib-ssl==1.0.0
+email-validator==2.1.0
+sglang[all]==0.2.0
+torch>=2.0.0
+transformers>=4.35.0
+PyPDF2==3.0.1
+pytz==2023.3

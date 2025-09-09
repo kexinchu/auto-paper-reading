@@ -1,0 +1,43 @@
+# 邮件配置
+email:
+  smtp_server: "smtp.gmail.com"  # 根据你的邮箱提供商修改
+  smtp_port: 587
+  sender_email: "ckx.ict@gmail.com"  # 你的邮箱
+  sender_password: "ckx19941124"  # 你的应用密码
+  recipient_email: "ckx.ict@gmail.com"  # 接收邮箱
+
+# arXiv配置
+arxiv:
+  categories: ["cs.AI", "cs.LG", "cs.CV", "cs.CL", "cs.NE"]  # 关注的学科分类
+  batch_size: 50  # 每批处理的论文数量
+  days_back: 1  # 获取最近几天的论文
+  max_total_papers: 500  # 每天最多获取的论文总数
+
+# 模型配置
+model:
+  name: "Qwen/Qwen3-0.6B-Instruct"  # 模型名称
+  sglang_server_url: "http://localhost:30000"  # SGLang服务器地址
+  max_context_length: 32768  # 最大上下文长度
+  max_generation_length: 2048  # 最大生成长度
+  temperature: 0.7
+  max_retries: 3
+  retry_delay: 1
+  download_from_huggingface: true  # 是否从HuggingFace下载模型
+
+# 筛选配置
+filtering:
+  min_score: 0.3  # 关键词匹配的最小分数
+  max_papers_per_batch: 50  # 每批最多处理的论文数量
+  enable_deduplication: true  # 启用去重
+
+# PDF处理配置
+pdf:
+  auto_delete: true  # 处理完成后自动删除PDF
+  max_pdf_size_mb: 50  # 最大PDF文件大小(MB)
+  extract_pages: 5  # 最多提取PDF前几页
+
+# 定时任务配置
+schedule:
+  time: "22:30"  # 每天运行时间（纽约时间）
+  timezone: "America/New_York"
+  enable_scheduler: true  # 是否启用定时任务

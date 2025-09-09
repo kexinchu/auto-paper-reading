@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  # SGLang模型服务
+  sglang-server:
+    build: .
+    container_name: qwen-sglang-server
+    ports:
+      - "30000:30000"
+    volumes:
+      - ./models:/app/models
+      - ./config.yaml:/app/config.yaml
+      - ./keywords.yaml:/app/keywords.yaml
+      - ./downloads:/app/downloads
+      - ./logs:/app/logs
+    environment:
+      - CUDA_VISIBLE_DEVICES=0  # 使用第一个GPU
+      - MODEL_NAME=Qwen/Qwen2.5-0.5B-Instruct
+      - HOST=0.0.0.0
+      - PORT=30000
+    command: >
+      python -m sglang.launch_server
+      --model-path Qwen/Qwen2.5-0.5B-Instruct
+      --host 0.0.0.0
+      --port 30000
+      --trust-remote-code
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:30000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # 论文阅读应用
+  paper-reader:
+    build: .
+    container_name: paper-reader-app
+    depends_on:
+      sglang-server:
+        condition: service_healthy
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ./keywords.yaml:/app/keywords.yaml
+      - ./downloads:/app/downloads
+      - ./logs:/app/logs
+    environment:
+      - SGLANG_SERVER_URL=http://sglang-server:30000
+    command: python scheduler.py
+    restart: unless-stopped
+
+  # 可选：Redis缓存服务
+  redis:
+    image: redis:7-alpine
+    container_name: paper-reader-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  redis_data:
