@@ -1,0 +1,20 @@
+# 主题配置文件
+
+topics:
+  # 机器学习相关
+  - name: "Machine Learning & LLM"
+    description: "Machine learning and large language model research, including transformer architectures, attention mechanisms, mixture of experts (MoE), diffusion models, foundation models, model pruning, quantization techniques, or KV cache optimization for efficient inference."
+    
+  # 计算机系统
+  - name: "Computer Systems"
+    description: "Computer systems research focusing on memory technologies, including CXL (Compute Express Link) memory interconnects, RDMA (Remote Direct Memory Access) for high-performance computing, or advanced memory management techniques."
+    
+  # 多模态与智能体
+  - name: "Multimodal & Agents"
+    description: "Multimodal learning and multi-agent systems research, including multi-modality approaches, multi-task learning, multi-agent coordination, security in AI systems, approximate nearest neighbor search (ANNS)."
+
+# 配置参数
+config:
+  min_relevance_score: 6  # 最小相关性评分 (0-10)
+  max_papers_per_topic: 10  # 每个主题最多保留的论文数量
+  enable_topic_ranking: true  # 是否启用主题内排序

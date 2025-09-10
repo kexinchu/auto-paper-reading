@@ -68,8 +68,7 @@ class ArxivCrawler:
                         'primary_category': paper.primary_category,
                         'doi': paper.doi,
                         'journal_ref': paper.journal_ref
-                    }
-                    
+                    }        
                     # 去重检查
                     if paper_info['id'] not in self.processed_papers:
                         papers.append(paper_info)
@@ -212,7 +211,7 @@ def test_arxiv_crawler():
     }
     
     crawler = ArxivCrawler(config)
-    papers = crawler.get_recent_papers()
+    papers = crawler.get_all_recent_papers()
     
     print(f"获取到 {len(papers)} 篇论文:")
     for paper in papers[:3]:  # 只显示前3篇

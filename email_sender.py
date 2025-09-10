@@ -182,6 +182,7 @@ class EmailSender:
         测试邮件连接
         """
         try:
+            logger.info(f"正在测试邮件连接: {self.sender_email} -> {self.smtp_server}:{self.smtp_port}")
             context = ssl.create_default_context()
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls(context=context)
@@ -190,6 +191,11 @@ class EmailSender:
             logger.info("邮件连接测试成功")
             return True
             
+        except smtplib.SMTPAuthenticationError as e:
+            logger.error(f"Gmail认证失败: {e}")
+            logger.error("请检查是否使用了Gmail应用专用密码，而不是普通密码")
+            logger.error("参考 GMAIL_SETUP.md 文件获取详细配置说明")
+            return False
         except Exception as e:
             logger.error(f"邮件连接测试失败: {e}")
             return False

@@ -1,10 +1,12 @@
 # 邮件配置
 email:
-  smtp_server: "smtp.gmail.com"  # 根据你的邮箱提供商修改
+  smtp_server: "smtp.gmail.com"
   smtp_port: 587
-  sender_email: "ckx.ict@gmail.com"  # 你的邮箱
-  sender_password: "ckx19941124"  # 你的应用密码
-  recipient_email: "ckx.ict@gmail.com"  # 接收邮箱
+  sender_email: "ckx.ict@gmail.com"
+  sender_password: "ckx19941124"  # Gmail应用专用密码
+  recipient_email: "ckx.ict@gmail.com"
+  use_tls: true
+  timeout: 30
 
 # arXiv配置
 arxiv:
@@ -15,14 +17,14 @@ arxiv:
 
 # 模型配置
 model:
-  name: "Qwen/Qwen3-0.6B-Instruct"  # 模型名称
+  name: "/app/models/Qwen3-0.6B"  # 本地模型路径
   sglang_server_url: "http://localhost:30000"  # SGLang服务器地址
   max_context_length: 32768  # 最大上下文长度
   max_generation_length: 2048  # 最大生成长度
   temperature: 0.7
   max_retries: 3
   retry_delay: 1
-  download_from_huggingface: true  # 是否从HuggingFace下载模型
+  download_from_huggingface: false  # 使用本地模型
 
 # 筛选配置
 filtering:

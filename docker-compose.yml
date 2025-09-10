@@ -8,19 +8,19 @@ services:
     ports:
       - "30000:30000"
     volumes:
-      - ./models:/app/models
+      - /home/kec23008/docker-sys/llm-security/Models:/app/models
       - ./config.yaml:/app/config.yaml
-      - ./keywords.yaml:/app/keywords.yaml
+      - ./topics.yaml:/app/topics.yaml
       - ./downloads:/app/downloads
       - ./logs:/app/logs
     environment:
       - CUDA_VISIBLE_DEVICES=0  # 使用第一个GPU
-      - MODEL_NAME=Qwen/Qwen2.5-0.5B-Instruct
+      - MODEL_NAME=/app/models/Qwen3-0.6B
       - HOST=0.0.0.0
       - PORT=30000
     command: >
       python -m sglang.launch_server
-      --model-path Qwen/Qwen2.5-0.5B-Instruct
+      --model-path /app/models/Qwen3-0.6B
       --host 0.0.0.0
       --port 30000
       --trust-remote-code
@@ -48,12 +48,12 @@ services:
         condition: service_healthy
     volumes:
       - ./config.yaml:/app/config.yaml
-      - ./keywords.yaml:/app/keywords.yaml
+      - ./topics.yaml:/app/topics.yaml
       - ./downloads:/app/downloads
       - ./logs:/app/logs
     environment:
       - SGLANG_SERVER_URL=http://sglang-server:30000
-    command: python scheduler.py
+    command: python main.py
     restart: unless-stopped
 
   # 可选：Redis缓存服务

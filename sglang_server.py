@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def start_sglang_server(
-    model_path: str = "Qwen/Qwen2.5-0.5B-Instruct",
+    model_path: str = "/app/models/Qwen2.5-0.5B-Instruct",
     host: str = "0.0.0.0",
     port: int = 30000,
     trust_remote_code: bool = True,
@@ -89,7 +89,7 @@ def check_gpu():
 
 def main():
     parser = argparse.ArgumentParser(description='SGLang服务器启动脚本')
-    parser.add_argument('--model-path', default='Qwen/Qwen2.5-0.5B-Instruct', help='模型路径')
+    parser.add_argument('--model-path', default='/app/models/Qwen2.5-0.5B-Instruct', help='模型路径')
     parser.add_argument('--host', default='0.0.0.0', help='服务器主机')
     parser.add_argument('--port', type=int, default=30000, help='服务器端口')
     parser.add_argument('--gpu-memory-utilization', type=float, default=0.8, help='GPU内存使用率')

@@ -135,7 +135,7 @@ run_local() {
     fi
     
     # 启动主程序
-    python3 scheduler.py
+    python3 main.py
 }
 
 # Docker运行模式
@@ -164,10 +164,10 @@ run_docker() {
 run_test() {
     print_step "运行测试模式..."
     
-    if [ -f "scheduler.py" ]; then
-        python3 scheduler.py --test
+    if [ -f "main.py" ]; then
+        python3 main.py --test
     else
-        print_error "scheduler.py文件不存在"
+        print_error "main.py文件不存在"
         exit 1
     fi
 }
@@ -176,10 +176,10 @@ run_test() {
 run_now() {
     print_step "立即执行一次任务..."
     
-    if [ -f "scheduler.py" ]; then
-        python3 scheduler.py --run-now
+    if [ -f "main.py" ]; then
+        python3 main.py --run-now
     else
-        print_error "scheduler.py文件不存在"
+        print_error "main.py文件不存在"
         exit 1
     fi
 }

@@ -8,21 +8,21 @@ services:
     ports:
       - "30000:30000"
     volumes:
-      - ./models:/app/models
+      - /home/kec23008/docker-sys/llm-security/Models:/app/models
       - ./config.yaml:/app/config.yaml
-      - ./keywords.yaml:/app/keywords.yaml
+      - ./topics.yaml:/app/topics.yaml
       - ./downloads:/app/downloads
       - ./logs:/app/logs
     environment:
       - CUDA_VISIBLE_DEVICES=0
-      - MODEL_NAME=Qwen/Qwen2.5-0.5B-Instruct
+      - MODEL_NAME=/app/models/Qwen3-0.6B
       - HOST=0.0.0.0
       - PORT=30000
       - GPU_MEMORY_UTILIZATION=0.9
       - MAX_MODEL_LEN=4096
     command: >
       python -m sglang.launch_server
-      --model-path Qwen/Qwen2.5-0.5B-Instruct
+      --model-path /app/models/Qwen3-0.6B
       --host 0.0.0.0
       --port 30000
       --trust-remote-code
@@ -60,13 +60,13 @@ services:
         condition: service_healthy
     volumes:
       - ./config.yaml:/app/config.yaml
-      - ./keywords.yaml:/app/keywords.yaml
+      - ./topics.yaml:/app/topics.yaml
       - ./downloads:/app/downloads
       - ./logs:/app/logs
     environment:
       - SGLANG_SERVER_URL=http://sglang-server:30000
       - TZ=Asia/Shanghai
-    command: python scheduler.py
+    command: python main.py
     restart: unless-stopped
     deploy:
       resources:
@@ -99,57 +99,5 @@ services:
         max-size: "50m"
         max-file: "3"
 
-  # Nginx反向代理
-  nginx:
-    image: nginx:alpine
-    container_name: paper-reader-nginx
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf
-      - ./ssl:/etc/nginx/ssl
-    depends_on:
-      - sglang-server
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "50m"
-        max-file: "3"
-
-  # 监控服务
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: paper-reader-prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--storage.tsdb.retention.time=200h'
-      - '--web.enable-lifecycle'
-    restart: unless-stopped
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: paper-reader-grafana
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
-      - ./grafana/datasources:/etc/grafana/provisioning/datasources
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin123
-    restart: unless-stopped
-
 volumes:
   redis_data:
-  prometheus_data:
-  grafana_data:

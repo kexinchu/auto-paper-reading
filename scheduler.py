@@ -3,7 +3,6 @@
 负责定时执行论文爬取、筛选、内容提取和邮件发送
 """
 
-import schedule
 import time
 import yaml
 import logging
@@ -15,7 +14,7 @@ import pytz
 
 # 导入自定义模块
 from arxiv_crawler import ArxivCrawler
-from paper_filter import PaperFilter
+from llm_paper_filter import LLMPaperFilter
 from content_extractor import ContentExtractor
 from email_sender import EmailSender
 
@@ -57,8 +56,10 @@ class PaperReaderScheduler:
             arxiv_config = self.config.get('arxiv', {})
             self.crawler = ArxivCrawler(arxiv_config)
             
-            # 初始化论文筛选器
-            self.filter = PaperFilter()
+            # 初始化LLM智能筛选器
+            model_config = self.config.get('model', {})
+            self.filter = LLMPaperFilter(model_config)
+            logger.info("使用LLM智能筛选器")
             
             # 初始化内容提取器
             model_config = self.config.get('model', {})
@@ -225,13 +226,17 @@ class PaperReaderScheduler:
         try:
             # 测试arXiv爬虫
             logger.info("测试arXiv爬虫...")
-            papers = self.crawler.get_recent_papers()
+            papers = self.crawler.get_all_recent_papers()
             logger.info(f"arXiv爬虫测试成功，获取到 {len(papers)} 篇论文")
             
             # 测试论文筛选
             logger.info("测试论文筛选...")
-            filtered_papers = self.filter.filter_papers(papers[:10])  # 只测试前10篇
-            logger.info(f"论文筛选测试成功，筛选出 {len(filtered_papers)} 篇论文")
+            if papers:
+                filtered_papers = self.filter.filter_papers(papers[:10])  # 只测试前10篇
+                logger.info(f"论文筛选测试成功，筛选出 {len(filtered_papers)} 篇论文")
+            else:
+                logger.warning("没有论文可供筛选测试")
+                filtered_papers = []
             
             # 测试内容提取
             if filtered_papers:

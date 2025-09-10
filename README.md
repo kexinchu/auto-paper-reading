@@ -17,14 +17,46 @@
 
 ### 方式一：Docker部署（推荐）
 
-#### 1. 环境要求
+#### 1. 系统要求
+
+##### 硬件要求
+- **GPU**: NVIDIA GPU (推荐RTX 3080或更高)
+- **内存**: 至少16GB RAM
+- **存储**: 至少50GB可用空间
+- **CPU**: 4核心以上
+
+##### 软件要求
 - Docker 20.10+
 - Docker Compose 2.0+
-- NVIDIA Container Toolkit（用于GPU加速）
-- 至少16GB RAM
-- NVIDIA GPU（推荐）
+- NVIDIA Container Toolkit (用于GPU支持)
+- nvidia-docker2 (可选，推荐)
 
-#### 2. 快速部署
+#### 2. 安装NVIDIA Container Toolkit
+
+##### Ubuntu/Debian
+```bash
+# 添加NVIDIA包仓库
+distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+
+# 安装nvidia-docker2
+sudo apt-get update && sudo apt-get install -y nvidia-docker2
+sudo systemctl restart docker
+```
+
+##### CentOS/RHEL
+```bash
+# 添加NVIDIA包仓库
+distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.repo | sudo tee /etc/yum.repos.d/nvidia-docker.repo
+
+# 安装nvidia-docker2
+sudo yum install -y nvidia-docker2
+sudo systemctl restart docker
+```
+
+#### 3. 快速部署
 ```bash
 # 克隆项目
 git clone <your-repo-url>
@@ -35,7 +67,7 @@ chmod +x deploy.sh
 ./deploy.sh
 ```
 
-#### 3. 手动部署
+#### 4. 手动部署
 ```bash
 # 构建并启动服务
 docker-compose up -d
@@ -72,17 +104,20 @@ email:
 
 **重要**: 对于Gmail，需要使用应用专用密码，不是你的登录密码。
 
-#### 3.2 关键词配置
+#### 3.2 主题配置
 
-编辑 `keywords.yaml` 文件，设置你感兴趣的关键词：
+编辑 `topics.yaml` 文件，使用自然语言描述你感兴趣的研究主题：
 
 ```yaml
-keywords:
-  machine_learning:
-    - "deep learning"
-    - "neural network"
-    - "transformer"
-    # 添加更多关键词...
+topics:
+  - name: "Machine Learning & LLM"
+    description: "Machine learning and large language model research, including transformer architectures, attention mechanisms, mixture of experts (MoE), diffusion models, foundation models, model pruning, quantization techniques, and KV cache optimization for efficient inference."
+  
+  - name: "Computer Systems"
+    description: "Computer systems research focusing on memory technologies, including CXL (Compute Express Link) memory interconnects, RDMA (Remote Direct Memory Access) for high-performance computing, and advanced memory management techniques."
+  
+  - name: "Multimodal & Agents"
+    description: "Multimodal learning and multi-agent systems research, including multi-modality approaches, multi-task learning, multi-agent coordination, security in AI systems, approximate nearest neighbor search (ANNS), and out-of-distribution detection and handling."
 ```
 
 #### 3.3 模型配置
@@ -106,6 +141,42 @@ model:
 - 筛选阈值
 - 定时任务时间
 
+## 测试和验证
+
+### 测试Gmail配置
+```bash
+# 测试Gmail连接和发送
+python3 test_gmail.py
+```
+
+### 测试LLM智能筛选
+```bash
+# 测试LLM筛选功能（需要SGLang服务器运行）
+python3 test_llm_filter.py
+```
+
+### 测试Gmail配置
+```bash
+# 测试Gmail连接和发送
+python3 test_gmail.py
+```
+
+### 测试基础组件
+```bash
+# 测试arXiv爬虫
+python3 -c "
+from arxiv_crawler import ArxivCrawler
+import yaml
+
+with open('config.yaml', 'r') as f:
+    config = yaml.safe_load(f)
+
+crawler = ArxivCrawler(config['arxiv'])
+papers = crawler.get_all_recent_papers()
+print(f'获取到 {len(papers)} 篇论文')
+"
+```
+
 ## 使用方法
 
 ### 🚀 一键启动（推荐）
@@ -123,25 +194,152 @@ model:
 
 ### Docker部署方式
 
-#### 1. 测试组件
+#### 1. 配置环境
+
+##### 1.1 配置邮件设置
+编辑 `config.yaml`:
+```yaml
+email:
+  smtp_server: "smtp.gmail.com"
+  smtp_port: 587
+  sender_email: "ckx.ict@gmail.com"
+  sender_password: "your_app_password"
+  recipient_email: "ckx.ict@gmail.com"
+```
+
+##### 1.2 配置关键词
+编辑 `topics.yaml` 添加你感兴趣的topic。
+
+##### 1.3 配置模型参数
+在 `config.yaml` 中调整模型配置:
+```yaml
+model:
+  name: "/app/models/Qwen2.5-0.5B-Instruct"  # 本地模型路径
+  sglang_server_url: "http://sglang-server:30000"
+  max_length: 2048
+  temperature: 0.7
+  max_retries: 3
+  retry_delay: 1
+```
+
+#### 2. 构建和启动服务
+
+##### 2.1 使用Docker Compose (推荐)
+```bash
+# 构建镜像
+docker-compose build
+
+# 启动服务
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+```
+
+##### 2.2 单独启动SGLang服务器
+```bash
+# 启动SGLang服务器
+docker run -d \
+  --name qwen-sglang-server \
+  --gpus all \
+  -p 30000:30000 \
+  -v /home/kec23008/docker-sys/llm-security/Models:/app/models \
+  auto-paper-reading \
+  python sglang_server.py
+```
+
+#### 3. 验证部署
+
+##### 3.1 检查服务状态
+```bash
+# 检查容器状态
+docker-compose ps
+
+# 检查SGLang服务器健康状态
+curl http://localhost:30000/health
+```
+
+##### 3.2 测试API
+```bash
+# 测试模型API
+curl -X POST http://localhost:30000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "default",
+    "messages": [{"role": "user", "content": "Hello, how are you?"}],
+    "temperature": 0.7,
+    "max_tokens": 100
+  }'
+```
+
+##### 3.3 测试完整流程
+```bash
+# 进入容器测试
+docker-compose exec paper-reader python main.py --test
+```
+
+#### 4. 服务管理
+
+##### 4.1 测试组件
 ```bash
 docker-compose exec paper-reader python main.py --test
 ```
 
-#### 2. 立即执行一次任务
+##### 4.2 立即执行一次任务
 ```bash
 docker-compose exec paper-reader python main.py --run-now
 ```
 
-#### 3. 查看服务状态
+##### 4.3 查看服务状态
 ```bash
 docker-compose ps
 docker-compose logs -f
 ```
 
-#### 4. 重启服务
+##### 4.4 重启服务
 ```bash
 docker-compose restart
+```
+
+#### 5. 监控和维护
+
+##### 5.1 查看日志
+```bash
+# 查看所有服务日志
+docker-compose logs -f
+
+# 查看特定服务日志
+docker-compose logs -f sglang-server
+docker-compose logs -f paper-reader
+```
+
+##### 5.2 重启服务
+```bash
+# 重启所有服务
+docker-compose restart
+
+# 重启特定服务
+docker-compose restart sglang-server
+```
+
+##### 5.3 更新服务
+```bash
+# 重新构建并启动
+docker-compose down
+docker-compose build --no-cache
+docker-compose up -d
+```
+
+##### 5.4 清理资源
+```bash
+# 停止并删除容器
+docker-compose down
+
+# 删除镜像
+docker-compose down --rmi all
+
+# 清理未使用的资源
+docker system prune -a
 ```
 
 ### 本地安装方式
@@ -173,7 +371,7 @@ python main.py
 ```
 auto-paper-reading/
 ├── arxiv_crawler.py          # arXiv论文爬取模块（支持分批处理）
-├── paper_filter.py           # 论文筛选模块
+├── llm_paper_filter.py       # LLM智能筛选模块
 ├── content_extractor.py      # 内容提取模块（支持PDF处理）
 ├── email_sender.py           # 邮件发送模块
 ├── scheduler.py              # 定时任务调度器（纽约时间）
@@ -183,15 +381,11 @@ auto-paper-reading/
 ├── quick_start.sh            # 快速启动脚本
 ├── deploy.sh                 # Docker部署脚本
 ├── config.yaml               # 主配置文件
-├── keywords.yaml             # 关键词配置文件
+├── topics.yaml               # 智能主题配置文件
 ├── requirements.txt          # 依赖包列表
 ├── Dockerfile                # Docker镜像构建文件
 ├── docker-compose.yml        # Docker Compose配置
 ├── docker-compose.prod.yml   # 生产环境配置
-├── nginx.conf                # Nginx反向代理配置
-├── prometheus.yml            # 监控配置
-├── env_example.txt           # 环境变量示例
-├── DEPLOYMENT.md             # 部署详细说明
 └── README.md                 # 说明文档
 ```
 
@@ -262,23 +456,109 @@ schedule:
 - **QQ邮箱**: smtp.qq.com:587
 - **Outlook**: smtp-mail.outlook.com:587
 
+## 性能优化
+
+### 1. GPU优化
+```yaml
+# 在docker-compose.yml中调整GPU配置
+deploy:
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          count: 1
+          capabilities: [gpu]
+```
+
+### 2. 内存优化
+```yaml
+# 调整SGLang服务器内存使用
+environment:
+  - GPU_MEMORY_UTILIZATION=0.8
+  - MAX_MODEL_LEN=4096
+```
+
+### 3. 并发优化
+```yaml
+# 在config.yaml中调整并发参数
+model:
+  max_retries: 3
+  retry_delay: 1
+```
+
+## 故障排除
+
+### 常见问题
+
+#### 1. GPU不可用
+```bash
+# 检查NVIDIA驱动
+nvidia-smi
+
+# 检查Docker GPU支持
+docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
+```
+
+#### 2. 模型加载失败
+```bash
+# 检查模型路径
+ls -la /home/kec23008/docker-sys/llm-security/Models/
+
+# 手动下载模型
+docker-compose exec sglang-server python -c "
+from transformers import AutoTokenizer, AutoModelForCausalLM
+AutoTokenizer.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct')
+AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct')
+"
+```
+
+#### 3. 内存不足
+```bash
+# 检查内存使用
+docker stats
+
+# 调整模型参数
+# 在sglang_server.py中减少max_model_len
+```
+
+#### 4. 网络连接问题
+```bash
+# 检查服务连通性
+docker-compose exec paper-reader curl http://sglang-server:30000/health
+```
+
+### 日志分析
+
+#### 查看错误日志
+```bash
+# 查看应用日志
+tail -f logs/paper_reader.log
+
+# 查看Docker日志
+docker-compose logs --tail=100 paper-reader
+```
+
 ## 常见问题
 
 ### Q: 模型下载失败怎么办？
 
-A: 确保网络连接正常，或者手动下载模型到本地目录。
+A: 确保网络连接正常，或者手动下载模型到本地目录 `/home/kec23008/docker-sys/llm-security/Models/`。
 
 ### Q: 邮件发送失败？
 
-A: 检查邮件配置，确保使用正确的SMTP服务器和应用密码。
+A: 检查邮件配置，确保使用正确的SMTP服务器和应用密码。对于Gmail，需要使用应用专用密码。
 
 ### Q: 如何调整筛选精度？
 
-A: 修改 `keywords.yaml` 中的匹配模式和阈值设置。
+A: 修改 `topics.yaml` 中的匹配模式和阈值设置。
 
 ### Q: 如何添加新的关键词？
 
-A: 编辑 `keywords.yaml` 文件，在相应的分类下添加关键词。
+A: 编辑 `topics.yaml` 文件，在相应的分类下添加关键词。
+
+### Q: Docker容器启动失败？
+
+A: 检查GPU驱动和NVIDIA Container Toolkit是否正确安装，确保模型路径映射正确。
 
 ## 日志文件
 
