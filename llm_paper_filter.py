@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class LLMPaperFilter:
     def __init__(self, config: Dict):
         self.config = config
-        self.sglang_server_url = config.get('sglang_server_url', 'http://localhost:30000')
+        self.sglang_server_url = config.get('sglang_server_url', 'http://localhost:8089')
         self.topics = self._load_topics()
         self.max_retries = config.get('max_retries', 3)
         self.retry_delay = config.get('retry_delay', 1)
@@ -177,7 +177,7 @@ class LLMPaperFilter:
 def test_llm_filter():
     """测试LLM筛选功能"""
     config = {
-        'sglang_server_url': 'http://localhost:30000',
+        'sglang_server_url': 'http://localhost:8089',
         'max_retries': 3,
         'retry_delay': 1
     }

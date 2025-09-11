@@ -36,7 +36,6 @@ show_help() {
     echo "用法: $0 [选项]"
     echo ""
     echo "选项:"
-    echo "  --local          本地运行模式"
     echo "  --docker         Docker运行模式"
     echo "  --test           测试模式（仅测试组件）"
     echo "  --run-now        立即执行一次任务"
@@ -44,10 +43,13 @@ show_help() {
     echo "  --help           显示此帮助信息"
     echo ""
     echo "示例:"
-    echo "  $0 --local       本地运行"
     echo "  $0 --docker      使用Docker运行"
     echo "  $0 --test        测试所有组件"
     echo "  $0 --run-now     立即执行一次任务"
+    echo ""
+    echo "推荐使用:"
+    echo "  ./quick_start.sh --test    # 测试模式"
+    echo "  ./quick_start.sh --run     # 完整任务"
 }
 
 # 检查Python环境
@@ -79,9 +81,9 @@ check_config() {
         exit 1
     fi
     
-    if [ ! -f "keywords.yaml" ]; then
-        print_error "keywords.yaml文件不存在"
-        print_message "请复制keywords.yaml.example并配置"
+    if [ ! -f "topics.yaml" ]; then
+        print_error "topics.yaml文件不存在"
+        print_message "请配置topics.yaml文件"
         exit 1
     fi
     
@@ -116,26 +118,6 @@ create_directories() {
     print_step "创建必要目录..."
     mkdir -p downloads logs models
     print_message "目录创建完成"
-}
-
-# 本地运行模式
-run_local() {
-    print_step "启动本地运行模式..."
-    
-    # 检查是否需要启动SGLang服务器
-    if ! curl -s http://localhost:30000/health &> /dev/null; then
-        print_warning "SGLang服务器未运行，请先启动SGLang服务器"
-        print_message "可以使用以下命令启动:"
-        print_message "python sglang_server.py"
-        read -p "是否继续运行（将使用摘要模式）？(y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
-    fi
-    
-    # 启动主程序
-    python3 main.py
 }
 
 # Docker运行模式
@@ -194,12 +176,6 @@ main() {
     
     # 解析命令行参数
     case "${1:-}" in
-        --local)
-            check_python
-            check_config
-            create_directories
-            run_local
-            ;;
         --docker)
             check_config
             run_docker
@@ -220,7 +196,7 @@ main() {
             check_python
             install_dependencies
             create_directories
-            print_message "安装完成！请配置config.yaml和keywords.yaml文件"
+            print_message "安装完成！请配置config.yaml和topics.yaml文件"
             ;;
         --help|-h)
             show_help

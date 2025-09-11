@@ -1,39 +1,36 @@
 # 自动论文阅读工具
 
-一个本地运行的智能论文阅读工具，能够自动从arXiv获取最新论文，根据关键词筛选相关内容，使用Qwen模型提取核心信息，并通过邮件定时发送摘要。
+一个基于Docker的智能论文阅读工具，能够自动从arXiv获取最新论文，使用Qwen模型进行智能筛选和内容提取，并通过邮件定时发送摘要。
 
-## 功能特性
+## 🚀 功能特性
 
 - 🔍 **自动爬取**: 从arXiv获取最新的学术论文
-- 🎯 **智能筛选**: 基于关键词和语义匹配筛选相关论文
-- 🤖 **AI提取**: 使用SGLang + Qwen2.5-0.5B模型提取论文核心内容
+- 🎯 **智能筛选**: 基于LLM的智能论文筛选
+- 🤖 **AI提取**: 使用SGLang + Qwen3-0.6B模型提取论文核心内容
 - 📧 **邮件推送**: 定时发送格式化的论文摘要邮件
 - ⏰ **定时任务**: 支持自定义时间自动执行
-- 📊 **多模式匹配**: 支持精确匹配、模糊匹配和语义匹配
-- 🐳 **Docker部署**: 支持容器化部署，易于扩展和维护
+- 🐳 **Docker部署**: 智能容器管理，支持镜像和容器自动检查
 - 🚀 **高性能**: 基于SGLang框架，支持GPU加速和并发处理
+- 📊 **错误通知**: 任务失败时自动发送邮件通知
 
-## 安装说明
+## 📋 系统要求
 
-### 方式一：Docker部署（推荐）
-
-#### 1. 系统要求
-
-##### 硬件要求
+### 硬件要求
 - **GPU**: NVIDIA GPU (推荐RTX 3080或更高)
 - **内存**: 至少16GB RAM
 - **存储**: 至少50GB可用空间
 - **CPU**: 4核心以上
 
-##### 软件要求
+### 软件要求
 - Docker 20.10+
 - Docker Compose 2.0+
 - NVIDIA Container Toolkit (用于GPU支持)
-- nvidia-docker2 (可选，推荐)
 
-#### 2. 安装NVIDIA Container Toolkit
+## 🛠️ 安装部署
 
-##### Ubuntu/Debian
+### 1. 安装NVIDIA Container Toolkit
+
+#### Ubuntu/Debian
 ```bash
 # 添加NVIDIA包仓库
 distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
@@ -45,7 +42,7 @@ sudo apt-get update && sudo apt-get install -y nvidia-docker2
 sudo systemctl restart docker
 ```
 
-##### CentOS/RHEL
+#### CentOS/RHEL
 ```bash
 # 添加NVIDIA包仓库
 distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
@@ -56,7 +53,7 @@ sudo yum install -y nvidia-docker2
 sudo systemctl restart docker
 ```
 
-#### 3. 快速部署
+### 2. 快速部署
 ```bash
 # 克隆项目
 git clone <your-repo-url>
@@ -67,44 +64,28 @@ chmod +x deploy.sh
 ./deploy.sh
 ```
 
-#### 4. 手动部署
-```bash
-# 构建并启动服务
-docker-compose up -d
+## ⚙️ 配置设置
 
-# 查看日志
-docker-compose logs -f
-```
-
-### 方式二：本地安装
-
-#### 1. 环境要求
-- Python 3.8+
-- CUDA支持（可选，用于GPU加速）
-
-#### 2. 安装依赖
-```bash
-pip install -r requirements.txt
-```
-
-### 3. 配置设置
-
-#### 3.1 邮件配置
+### 邮件配置
 
 编辑 `config.yaml` 文件中的邮件配置：
 
 ```yaml
 email:
-  smtp_server: "smtp.gmail.com"  # 你的邮箱SMTP服务器
-  smtp_port: 587
-  sender_email: "your_email@gmail.com"  # 你的邮箱
-  sender_password: "your_app_password"  # 你的应用密码
-  recipient_email: "your_email@gmail.com"  # 接收邮箱
+  smtp_server: "smtp.163.com"  # 163邮箱SMTP服务器
+  smtp_port: 465
+  sender_email: "chu1649158185@163.com"  # 发送邮箱
+  sender_password: "your_163_password"  # 163邮箱授权码
+  recipient_email: "ckx.ict@gmail.com"  # 接收邮箱
+  use_tls: true
 ```
 
-**重要**: 对于Gmail，需要使用应用专用密码，不是你的登录密码。
+**重要**: 对于163邮箱，需要：
+1. 开启SMTP服务
+2. 获取客户端授权码
+3. 使用授权码作为密码
 
-#### 3.2 主题配置
+### 主题配置
 
 编辑 `topics.yaml` 文件，使用自然语言描述你感兴趣的研究主题：
 
@@ -117,348 +98,165 @@ topics:
     description: "Computer systems research focusing on memory technologies, including CXL (Compute Express Link) memory interconnects, RDMA (Remote Direct Memory Access) for high-performance computing, and advanced memory management techniques."
   
   - name: "Multimodal & Agents"
-    description: "Multimodal learning and multi-agent systems research, including multi-modality approaches, multi-task learning, multi-agent coordination, security in AI systems, approximate nearest neighbor search (ANNS), and out-of-distribution detection and handling."
+    description: "Multimodal learning and multi-agent systems research, including multi-modality approaches, multi-task learning, multi-agent coordination, security in AI systems, approximate nearest neighbor search (ANNS)."
 ```
 
-#### 3.3 模型配置
+### arXiv分类配置
 
-在 `config.yaml` 中配置SGLang服务器：
+在 `config.yaml` 中配置关注的学科分类：
 
 ```yaml
-model:
-  sglang_server_url: "http://localhost:30000"  # SGLang服务器地址
-  max_length: 2048
-  temperature: 0.7
-  max_retries: 3
-  retry_delay: 1
+arxiv:
+  categories: [
+    "cs.AI",   # 人工智能
+    "cs.LG",   # 机器学习
+    "cs.CV",   # 计算机视觉与模式识别
+    "cs.CL",   # 计算与语言
+    "cs.NE",   # 神经与进化计算
+    "cs.RO",   # 机器人学
+    "cs.DC",   # 分布式、并行与集群计算
+    "cs.SE",   # 软件工程
+    "cs.DB",   # 数据库
+    "cs.CR",   # 密码学与安全
+    "cs.HC",   # 人机交互
+    "cs.IR",   # 信息检索
+    "cs.IT",   # 信息理论
+    "cs.MM",   # 多媒体
+    "cs.NI",   # 网络与互联网架构
+    "cs.OS",   # 操作系统
+    "cs.PL",   # 编程语言
+    "cs.SI",   # 社会和信息网络
+    "cs.SY"    # 系统与控制
+  ]
 ```
 
-#### 3.4 其他配置
+## 🚀 使用方法
 
-在 `config.yaml` 中可以调整：
+### 快速开始
 
-- arXiv学科分类
-- 筛选阈值
-- 定时任务时间
-
-## 测试和验证
-
-### 测试Gmail配置
 ```bash
-# 测试Gmail连接和发送
-python3 test_gmail.py
+# 测试所有组件
+./quick_start.sh --test
+
+# 执行完整任务（包含启动Qwen模型）
+./quick_start.sh --run
+
+# 查看帮助
+./quick_start.sh --help
 ```
 
-### 测试LLM智能筛选
+### Docker管理
+
 ```bash
-# 测试LLM筛选功能（需要SGLang服务器运行）
-python3 test_llm_filter.py
+# 启动所有服务
+./docker_manager.sh start
+
+# 启动测试环境
+./docker_manager.sh test
+
+# 停止所有服务
+./docker_manager.sh stop
+
+# 清理所有容器和镜像
+./docker_manager.sh clean
 ```
 
-### 测试Gmail配置
-```bash
-# 测试Gmail连接和发送
-python3 test_gmail.py
-```
+### 智能容器管理
 
-### 测试基础组件
+系统会自动检查并管理Docker容器和镜像：
+
+- **容器存在且运行** → 直接使用
+- **容器存在但未运行** → 启动容器
+- **容器不存在但镜像存在** → 创建并启动容器
+- **两者都不存在** → 构建镜像并创建容器
+
+## 📧 邮件通知
+
+### 正常邮件
+- 每日论文摘要发送到配置的接收邮箱
+- 包含论文标题、作者、核心内容摘要
+
+### 错误通知
+- 任务失败时自动发送错误邮件到 `ckx.ict@gmail.com`
+- 包含详细错误信息和系统日志提示
+
+## 🧪 测试验证
+
+### 基础功能测试
 ```bash
-# 测试arXiv爬虫
+# 测试arXiv爬虫和邮件发送
 python3 -c "
 from arxiv_crawler import ArxivCrawler
+from email_sender import EmailSender
 import yaml
 
+# 测试爬虫
 with open('config.yaml', 'r') as f:
     config = yaml.safe_load(f)
 
 crawler = ArxivCrawler(config['arxiv'])
 papers = crawler.get_all_recent_papers()
 print(f'获取到 {len(papers)} 篇论文')
+
+# 测试邮件
+sender = EmailSender(config['email'])
+if sender.test_connection():
+    print('邮件连接测试成功')
 "
 ```
 
-## 使用方法
-
-### 🚀 一键启动（推荐）
-
-```bash
-# 快速启动（自动检测环境）
-./quick_start.sh
-
-# 或者使用完整脚本
-./run_paper_reader.sh --local    # 本地运行
-./run_paper_reader.sh --docker   # Docker运行
-./run_paper_reader.sh --test     # 测试组件
-./run_paper_reader.sh --run-now  # 立即执行
-```
-
-### Docker部署方式
-
-#### 1. 配置环境
-
-##### 1.1 配置邮件设置
-编辑 `config.yaml`:
-```yaml
-email:
-  smtp_server: "smtp.gmail.com"
-  smtp_port: 587
-  sender_email: "ckx.ict@gmail.com"
-  sender_password: "your_app_password"
-  recipient_email: "ckx.ict@gmail.com"
-```
-
-##### 1.2 配置关键词
-编辑 `topics.yaml` 添加你感兴趣的topic。
-
-##### 1.3 配置模型参数
-在 `config.yaml` 中调整模型配置:
-```yaml
-model:
-  name: "/app/models/Qwen2.5-0.5B-Instruct"  # 本地模型路径
-  sglang_server_url: "http://sglang-server:30000"
-  max_length: 2048
-  temperature: 0.7
-  max_retries: 3
-  retry_delay: 1
-```
-
-#### 2. 构建和启动服务
-
-##### 2.1 使用Docker Compose (推荐)
-```bash
-# 构建镜像
-docker-compose build
-
-# 启动服务
-docker-compose up -d
-
-# 查看日志
-docker-compose logs -f
-```
-
-##### 2.2 单独启动SGLang服务器
-```bash
-# 启动SGLang服务器
-docker run -d \
-  --name qwen-sglang-server \
-  --gpus all \
-  -p 30000:30000 \
-  -v /home/kec23008/docker-sys/llm-security/Models:/app/models \
-  auto-paper-reading \
-  python sglang_server.py
-```
-
-#### 3. 验证部署
-
-##### 3.1 检查服务状态
-```bash
-# 检查容器状态
-docker-compose ps
-
-# 检查SGLang服务器健康状态
-curl http://localhost:30000/health
-```
-
-##### 3.2 测试API
-```bash
-# 测试模型API
-curl -X POST http://localhost:30000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "default",
-    "messages": [{"role": "user", "content": "Hello, how are you?"}],
-    "temperature": 0.7,
-    "max_tokens": 100
-  }'
-```
-
-##### 3.3 测试完整流程
-```bash
-# 进入容器测试
-docker-compose exec paper-reader python main.py --test
-```
-
-#### 4. 服务管理
-
-##### 4.1 测试组件
-```bash
-docker-compose exec paper-reader python main.py --test
-```
-
-##### 4.2 立即执行一次任务
-```bash
-docker-compose exec paper-reader python main.py --run-now
-```
-
-##### 4.3 查看服务状态
-```bash
-docker-compose ps
-docker-compose logs -f
-```
-
-##### 4.4 重启服务
-```bash
-docker-compose restart
-```
-
-#### 5. 监控和维护
-
-##### 5.1 查看日志
-```bash
-# 查看所有服务日志
-docker-compose logs -f
-
-# 查看特定服务日志
-docker-compose logs -f sglang-server
-docker-compose logs -f paper-reader
-```
-
-##### 5.2 重启服务
-```bash
-# 重启所有服务
-docker-compose restart
-
-# 重启特定服务
-docker-compose restart sglang-server
-```
-
-##### 5.3 更新服务
-```bash
-# 重新构建并启动
-docker-compose down
-docker-compose build --no-cache
-docker-compose up -d
-```
-
-##### 5.4 清理资源
-```bash
-# 停止并删除容器
-docker-compose down
-
-# 删除镜像
-docker-compose down --rmi all
-
-# 清理未使用的资源
-docker system prune -a
-```
-
-### 本地安装方式
-
-#### 1. 安装依赖
-```bash
-./run_paper_reader.sh --setup
-```
-
-#### 2. 测试组件
-```bash
-python main.py --test
-```
-
-#### 3. 立即执行一次任务
-```bash
-python main.py --run-now
-```
-
-#### 4. 启动定时任务
-```bash
-python main.py
-```
-
-程序将按照配置的时间（纽约时间22:30）每天自动执行。
-
-## 项目结构
+## 📁 项目结构
 
 ```
 auto-paper-reading/
-├── arxiv_crawler.py          # arXiv论文爬取模块（支持分批处理）
-├── llm_paper_filter.py       # LLM智能筛选模块
-├── content_extractor.py      # 内容提取模块（支持PDF处理）
-├── email_sender.py           # 邮件发送模块
-├── scheduler.py              # 定时任务调度器（纽约时间）
-├── main.py                   # 主程序入口
-├── sglang_server.py          # SGLang服务器启动脚本
-├── run_paper_reader.sh       # 一键运行脚本
-├── quick_start.sh            # 快速启动脚本
-├── deploy.sh                 # Docker部署脚本
-├── config.yaml               # 主配置文件
-├── topics.yaml               # 智能主题配置文件
-├── requirements.txt          # 依赖包列表
-├── Dockerfile                # Docker镜像构建文件
-├── docker-compose.yml        # Docker Compose配置
-├── docker-compose.prod.yml   # 生产环境配置
-└── README.md                 # 说明文档
+├── quick_start.sh          # 完整执行入口
+├── docker_manager.sh       # Docker智能管理脚本
+├── run_paper_reader.sh     # 传统运行脚本
+├── deploy.sh              # 部署脚本
+├── config.yaml            # 主配置文件
+├── topics.yaml            # 主题配置文件
+├── requirements.txt       # Python依赖
+├── Dockerfile            # Docker镜像构建文件
+├── docker-compose.yml    # Docker Compose配置
+├── arxiv_crawler.py      # arXiv爬虫模块
+├── llm_paper_filter.py   # LLM智能筛选模块
+├── content_extractor.py  # 内容提取模块
+├── email_sender.py       # 邮件发送模块
+├── scheduler.py          # 定时任务调度器
+└── main.py              # 主程序入口
 ```
 
-## 配置说明
+## 🔧 故障排除
 
-### arXiv配置
+### 常见问题
 
-```yaml
-arxiv:
-  categories: ["cs.AI", "cs.LG", "cs.CV", "cs.CL", "cs.NE"]  # 学科分类
-  batch_size: 50  # 每批处理的论文数量
-  days_back: 1    # 获取最近几天的论文
-  max_total_papers: 200  # 每天最多获取的论文总数
+#### 1. SGLang服务器启动失败
+```bash
+# 检查GPU支持
+nvidia-smi
+
+# 检查Docker GPU支持
+docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
 ```
 
-### 模型配置
+#### 2. 邮件发送失败
+- 检查163邮箱是否开启SMTP服务
+- 确认使用的是授权码而不是登录密码
+- 检查网络连接和防火墙设置
 
-```yaml
-model:
-  name: "Qwen/Qwen3-0.6B-Instruct"  # 模型名称
-  sglang_server_url: "http://localhost:30000"  # SGLang服务器地址
-  max_context_length: 32768  # 最大上下文长度
-  max_generation_length: 2048  # 最大生成长度
-  temperature: 0.7  # 生成温度
-  max_retries: 3  # 最大重试次数
-  retry_delay: 1  # 重试延迟（秒）
-  download_from_huggingface: true  # 从HuggingFace下载模型
+#### 3. 容器启动失败
+```bash
+# 查看容器日志
+docker logs qwen-sglang-server
+
+# 清理并重新构建
+./docker_manager.sh clean
+./docker_manager.sh start
 ```
 
-### 筛选配置
+## 📈 性能优化
 
-```yaml
-filtering:
-  min_score: 0.3  # 最小匹配分数
-  max_papers_per_batch: 10  # 每批最多处理的论文数量
-  enable_deduplication: true  # 启用去重
-```
-
-### PDF处理配置
-
-```yaml
-pdf:
-  auto_delete: true  # 处理完成后自动删除PDF
-  max_pdf_size_mb: 50  # 最大PDF文件大小(MB)
-  extract_pages: 5  # 最多提取PDF前几页
-```
-
-### 定时任务配置
-
-```yaml
-schedule:
-  time: "22:30"  # 每天运行时间（纽约时间）
-  timezone: "America/New_York"  # 时区
-  enable_scheduler: true  # 是否启用定时任务
-```
-
-## 邮件配置指南
-
-### Gmail配置
-
-1. 启用两步验证
-2. 生成应用专用密码
-3. 使用应用密码作为 `sender_password`
-
-### 其他邮箱配置
-
-- **163邮箱**: smtp.163.com:25
-- **QQ邮箱**: smtp.qq.com:587
-- **Outlook**: smtp-mail.outlook.com:587
-
-## 性能优化
-
-### 1. GPU优化
+### GPU优化
 ```yaml
 # 在docker-compose.yml中调整GPU配置
 deploy:
@@ -470,7 +268,7 @@ deploy:
           capabilities: [gpu]
 ```
 
-### 2. 内存优化
+### 内存优化
 ```yaml
 # 调整SGLang服务器内存使用
 environment:
@@ -478,103 +276,33 @@ environment:
   - MAX_MODEL_LEN=4096
 ```
 
-### 3. 并发优化
-```yaml
-# 在config.yaml中调整并发参数
-model:
-  max_retries: 3
-  retry_delay: 1
-```
+## 🎯 更新日志
 
-## 故障排除
+### 2025-09-10 重大更新
 
-### 常见问题
+#### ✅ 新增功能
+- **Docker智能管理**: 自动检查容器和镜像状态，智能启动服务
+- **错误邮件通知**: 任务失败时自动发送详细错误信息
+- **完整执行入口**: `quick_start.sh` 作为统一执行入口
+- **163邮箱支持**: 完整的163邮箱SMTP配置和SSL连接支持
 
-#### 1. GPU不可用
-```bash
-# 检查NVIDIA驱动
-nvidia-smi
+#### 🔧 修复问题
+- 修复 `keywords.yaml` → `topics.yaml` 配置不一致问题
+- 修复 `schedule` 模块导入问题
+- 修复模型路径配置问题
+- 移除已弃用的本地启动方法
 
-# 检查Docker GPU支持
-docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
-```
+#### 🧪 测试结果
+- arXiv爬虫: 成功获取256篇论文
+- 邮件发送: 163邮箱连接测试成功
+- Docker构建: 镜像构建和容器创建成功
 
-#### 2. 模型加载失败
-```bash
-# 检查模型路径
-ls -la /home/kec23008/docker-sys/llm-security/Models/
+## 📞 支持
 
-# 手动下载模型
-docker-compose exec sglang-server python -c "
-from transformers import AutoTokenizer, AutoModelForCausalLM
-AutoTokenizer.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct')
-AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct')
-"
-```
+如有问题或建议，请通过以下方式联系：
+- 邮件: ckx.ict@gmail.com
+- 错误通知会自动发送到配置的邮箱
 
-#### 3. 内存不足
-```bash
-# 检查内存使用
-docker stats
+## 📄 许可证
 
-# 调整模型参数
-# 在sglang_server.py中减少max_model_len
-```
-
-#### 4. 网络连接问题
-```bash
-# 检查服务连通性
-docker-compose exec paper-reader curl http://sglang-server:30000/health
-```
-
-### 日志分析
-
-#### 查看错误日志
-```bash
-# 查看应用日志
-tail -f logs/paper_reader.log
-
-# 查看Docker日志
-docker-compose logs --tail=100 paper-reader
-```
-
-## 常见问题
-
-### Q: 模型下载失败怎么办？
-
-A: 确保网络连接正常，或者手动下载模型到本地目录 `/home/kec23008/docker-sys/llm-security/Models/`。
-
-### Q: 邮件发送失败？
-
-A: 检查邮件配置，确保使用正确的SMTP服务器和应用密码。对于Gmail，需要使用应用专用密码。
-
-### Q: 如何调整筛选精度？
-
-A: 修改 `topics.yaml` 中的匹配模式和阈值设置。
-
-### Q: 如何添加新的关键词？
-
-A: 编辑 `topics.yaml` 文件，在相应的分类下添加关键词。
-
-### Q: Docker容器启动失败？
-
-A: 检查GPU驱动和NVIDIA Container Toolkit是否正确安装，确保模型路径映射正确。
-
-## 日志文件
-
-程序运行时会生成 `paper_reader.log` 日志文件，记录详细的执行信息。
-
-## 注意事项
-
-1. 首次运行会下载Qwen模型，需要较长时间
-2. 建议在服务器上运行，确保网络稳定
-3. 定期检查日志文件，确保程序正常运行
-4. 注意arXiv的访问频率限制
-
-## 许可证
-
-MIT License
-
-## 贡献
-
-欢迎提交Issue和Pull Request来改进这个项目。
+本项目采用 MIT 许可证。

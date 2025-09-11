@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class ContentExtractor:
     def __init__(self, model_config: Dict):
         self.model_config = model_config
-        self.sglang_server_url = model_config.get('sglang_server_url', 'http://localhost:30000')
+        self.sglang_server_url = model_config.get('sglang_server_url', 'http://localhost:8089')
         self.max_context_length = model_config.get('max_context_length', 32768)
         self.max_generation_length = model_config.get('max_generation_length', 2048)
         self.temperature = model_config.get('temperature', 0.7)
@@ -280,7 +280,7 @@ def test_content_extractor():
     """
     # 测试配置
     model_config = {
-        'sglang_server_url': 'http://localhost:30000',
+        'sglang_server_url': 'http://localhost:8089',
         'max_length': 1024,
         'temperature': 0.7,
         'max_retries': 3,

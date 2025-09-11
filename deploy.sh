@@ -117,7 +117,7 @@ verify_deployment() {
     
     # 检查SGLang服务器健康状态
     print_message "检查SGLang服务器健康状态..."
-    if curl -s http://localhost:30000/health > /dev/null; then
+    if curl -s http://localhost:8089/health > /dev/null; then
         print_message "SGLang服务器运行正常"
     else
         print_warning "SGLang服务器可能未完全启动，请稍后检查"
@@ -138,7 +138,7 @@ show_usage() {
     echo "  立即执行: docker-compose exec paper-reader python main.py --run-now"
     echo ""
     echo "服务地址："
-    echo "  SGLang API: http://localhost:30000"
+    echo "  SGLang API: http://localhost:8089"
     echo "  Redis: localhost:6379"
 }
 

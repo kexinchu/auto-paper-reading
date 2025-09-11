@@ -161,14 +161,24 @@ class EmailSender:
             # 创建SSL上下文
             context = ssl.create_default_context()
             
-            # 连接SMTP服务器
-            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-                server.starttls(context=context)
-                server.login(self.sender_email, self.sender_password)
-                
-                # 发送邮件
-                text = message.as_string()
-                server.sendmail(self.sender_email, self.recipient_email, text)
+            # 根据端口选择连接方式
+            if self.smtp_port == 465:
+                # SSL连接（163邮箱使用465端口）
+                with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, context=context) as server:
+                    server.login(self.sender_email, self.sender_password)
+                    
+                    # 发送邮件
+                    text = message.as_string()
+                    server.sendmail(self.sender_email, self.recipient_email, text)
+            else:
+                # TLS连接（Gmail等使用587端口）
+                with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                    server.starttls(context=context)
+                    server.login(self.sender_email, self.sender_password)
+                    
+                    # 发送邮件
+                    text = message.as_string()
+                    server.sendmail(self.sender_email, self.recipient_email, text)
                 
             logger.info("邮件发送成功")
             return True
@@ -184,17 +194,28 @@ class EmailSender:
         try:
             logger.info(f"正在测试邮件连接: {self.sender_email} -> {self.smtp_server}:{self.smtp_port}")
             context = ssl.create_default_context()
-            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-                server.starttls(context=context)
-                server.login(self.sender_email, self.sender_password)
+            
+            # 根据端口选择连接方式
+            if self.smtp_port == 465:
+                # SSL连接（163邮箱使用465端口）
+                with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, context=context) as server:
+                    server.login(self.sender_email, self.sender_password)
+            else:
+                # TLS连接（Gmail等使用587端口）
+                with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                    server.starttls(context=context)
+                    server.login(self.sender_email, self.sender_password)
             
             logger.info("邮件连接测试成功")
             return True
             
         except smtplib.SMTPAuthenticationError as e:
-            logger.error(f"Gmail认证失败: {e}")
-            logger.error("请检查是否使用了Gmail应用专用密码，而不是普通密码")
-            logger.error("参考 GMAIL_SETUP.md 文件获取详细配置说明")
+            logger.error(f"邮件认证失败: {e}")
+            if "163.com" in self.sender_email:
+                logger.error("请检查是否使用了163邮箱的授权码，而不是普通密码")
+                logger.error("需要在163邮箱设置中开启SMTP服务并获取授权码")
+            else:
+                logger.error("请检查是否使用了应用专用密码，而不是普通密码")
             return False
         except Exception as e:
             logger.error(f"邮件连接测试失败: {e}")

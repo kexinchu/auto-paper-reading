@@ -11,6 +11,7 @@ import os
 import sys
 from typing import Dict
 import pytz
+import schedule
 
 # 导入自定义模块
 from arxiv_crawler import ArxivCrawler
@@ -162,13 +163,14 @@ class PaperReaderScheduler:
                 error_content = [{
                     'title': '任务执行错误',
                     'authors': '系统',
-                    'extracted_content': f'今日论文阅读任务执行失败: {str(e)}',
+                    'extracted_content': f'今日论文阅读任务执行失败: {str(e)}\n\n错误详情:\n{str(e)}\n\n请检查系统日志获取更多信息。',
                     'extraction_time': datetime.now().isoformat(),
                     'source': 'error'
                 }]
                 self.email_sender.send_paper_summary(error_content, "任务执行错误")
-            except:
-                logger.error("发送错误通知邮件失败")
+                logger.info("错误通知邮件已发送")
+            except Exception as email_error:
+                logger.error(f"发送错误通知邮件失败: {email_error}")
     
     def setup_schedule(self):
         """设置定时任务"""
