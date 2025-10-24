@@ -38,7 +38,7 @@ arxiv:
 # 模型配置
 model:
   name: "/app/models/Qwen3-0.6B"  # 本地模型路径
-  sglang_server_url: "http://localhost:30000"  # SGLang服务器地址
+  sglang_server_url: "http://localhost:8089"  # SGLang服务器地址
   max_context_length: 32768  # 最大上下文长度
   max_generation_length: 2048  # 最大生成长度
   temperature: 0.7

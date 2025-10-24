@@ -19,23 +19,13 @@ RUN apt-get update && apt-get install -y \
     gnupg2 \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装CUDA支持（如果需要GPU加速）
-# 注意：这需要nvidia-docker运行时
-# RUN apt-get update && apt-get install -y \
-#     nvidia-cuda-toolkit \
-#     && rm -rf /var/lib/apt/lists/*
-# 通过pip安装CUDA支持，更轻量级
-# RUN apt-get update && apt-get install -y \
-#     && rm -rf /var/lib/apt/lists/*
+# GPU支持通过nvidia-docker运行时提供
 
 # 复制requirements文件
 COPY requirements.txt .
 
 # 安装Python依赖
 RUN pip install --no-cache-dir -r requirements.txt
-
-# 安装SGLang
-RUN pip install --no-cache-dir "sglang[all]"
 
 # 复制应用代码
 COPY . .
@@ -47,11 +37,11 @@ RUN mkdir -p downloads logs models
 RUN chmod +x *.sh
 
 # 暴露端口（SGLang默认端口）
-EXPOSE 30000
+EXPOSE 8089
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:30000/health || exit 1
+    CMD curl -f http://localhost:8089/health || exit 1
 
-# 启动命令 - 保持容器运行但不自动启动SGLang服务
-CMD ["tail", "-f", "/dev/null"]
+# 使用bash作为主进程，确保可以通过exec进入
+CMD ["/bin/bash", "-c", "python -m sglang.launch_server --model-path /app/models/Qwen3-0.6B --host 0.0.0.0 --port 8089 --trust-remote-code --attention-backend flashinfer --decode-attention-backend flashinfer --disable-cuda-graph --mem-fraction-static 0.8 --max-running-requests 32 --max-queued-requests 64 & wait"]

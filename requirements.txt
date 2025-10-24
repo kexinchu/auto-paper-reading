@@ -12,5 +12,27 @@ PyPDF2==3.0.1
 pytz==2023.3
 sentence-transformers>=5.0.0
 # CUDA support for GPU acceleration
-torch>=2.0.0
+torch==2.4.0
 transformers>=4.30.0
+# SGLang dependencies
+pydantic>=2.0.0
+fastapi>=0.100.0
+uvicorn>=0.20.0
+orjson>=3.8.0
+uvloop==0.21.0
+psutil==7.1.0
+pyzmq==27.1.0 
+zmq==0.0.0
+pybase64==1.4.2
+openai==1.109.1
+partial_json_parser==0.2.1.1.post6
+sentencepiece==0.2.1
+dill==0.4.0
+compressed_tensors==0.11.0
+frozendict==2.4.6
+einops==0.8.1
+# SGLang 0.4.9 for LLM serving
+sglang==0.4.9
+sgl_kernel==0.3.14
+triton==2.3.0
+vllm==0.6.0
