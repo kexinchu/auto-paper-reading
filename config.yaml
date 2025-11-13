@@ -35,22 +35,32 @@ arxiv:
   days_back: 1  # 获取最近几天的论文
   max_total_papers: 500  # 每天最多获取的论文总数
 
-# 模型配置
-model:
-  name: "/app/models/Qwen3-0.6B"  # 本地模型路径
-  sglang_server_url: "http://localhost:8089"  # SGLang服务器地址
-  max_context_length: 32768  # 最大上下文长度
-  max_generation_length: 2048  # 最大生成长度
-  temperature: 0.7
-  max_retries: 3
-  retry_delay: 1
-  download_from_huggingface: false  # 使用本地模型
+# LLM API配置 (支持OpenAI兼容接口)
+llm:
+  # API配置 - 支持多种提供商
+  # OpenAI官方: https://api.openai.com/v1
+  # DeepSeek: https://api.deepseek.com
+  # 硅基流动(SiliconFlow): https://api.siliconflow.cn/v1
+  # 通义千问(Qwen): https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_base: "https://api.deepseek.com"  # API地址
+  api_key: "YOUR_API_KEY_HERE"  # API密钥 (或使用环境变量 OPENAI_API_KEY)
+  model: "deepseek-chat"  # 模型名称
+  # 其他可选模型:
+  # - OpenAI: gpt-3.5-turbo, gpt-4o-mini
+  # - DeepSeek: deepseek-chat
+  # - SiliconFlow: Qwen/Qwen2.5-7B-Instruct
+  # - Qwen: qwen-plus, qwen-turbo
+  temperature: 0.1  # 生成温度
+  max_tokens: 500  # 最大生成token数
+  max_retries: 3  # 最大重试次数
+  retry_delay: 1  # 重试延迟(秒)
+  timeout: 30  # 请求超时时间(秒)
 
-# 筛选配置
+# 论文处理配置
 filtering:
-  min_score: 0.3  # 关键词匹配的最小分数
   max_papers_per_batch: 50  # 每批最多处理的论文数量
   enable_deduplication: true  # 启用去重
+  # 注意：筛选阈值配置已移至 topics.yaml 文件中
 
 # PDF处理配置
 pdf:

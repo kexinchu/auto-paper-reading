@@ -58,13 +58,13 @@ class PaperReaderScheduler:
             self.crawler = ArxivCrawler(arxiv_config)
             
             # 初始化LLM智能筛选器
-            model_config = self.config.get('model', {})
-            self.filter = LLMPaperFilter(model_config)
+            llm_config = self.config.get('llm', {})
+            self.filter = LLMPaperFilter(llm_config)
             logger.info("使用LLM智能筛选器")
             
             # 初始化内容提取器
-            model_config = self.config.get('model', {})
-            self.extractor = ContentExtractor(model_config)
+            llm_config = self.config.get('llm', {})
+            self.extractor = ContentExtractor(llm_config)
             
             # 初始化邮件发送器
             email_config = self.config.get('email', {})
@@ -115,29 +115,42 @@ class PaperReaderScheduler:
             logger.info(f"总共筛选出 {len(all_filtered_papers)} 篇相关论文")
             
             # 3. 分批下载PDF和处理
-            logger.info("步骤3: 分批下载PDF并提取内容")
+            logger.info("步骤3: 根据需要下载PDF并提取内容")
             all_extracted_contents = []
             pdf_config = self.config.get('pdf', {})
             auto_delete = pdf_config.get('auto_delete', True)
             max_size_mb = pdf_config.get('max_pdf_size_mb', 50)
             extract_pages = pdf_config.get('extract_pages', 5)
             
+            # 统计需要全文的论文数量
+            fulltext_count = sum(1 for p in all_filtered_papers if p.get('need_fulltext', False))
+            logger.info(f"共 {len(all_filtered_papers)} 篇论文，其中 {fulltext_count} 篇需要下载全文")
+            
             for i, paper in enumerate(all_filtered_papers):
-                logger.info(f"处理第 {i+1}/{len(all_filtered_papers)} 篇论文: {paper.get('title', '')[:50]}...")
+                need_fulltext = paper.get('need_fulltext', False)
+                fulltext_mark = "📄" if need_fulltext else "📋"
+                logger.info(f"{fulltext_mark} 处理第 {i+1}/{len(all_filtered_papers)} 篇论文: {paper.get('title', '')[:50]}...")
                 
-                # 下载PDF
-                pdf_path = self.crawler.download_pdf(paper, max_size_mb=max_size_mb)
-                if pdf_path:
-                    paper['pdf_path'] = pdf_path
-                
-                # 提取内容
-                if pdf_path and os.path.exists(pdf_path):
-                    result = self.extractor.extract_from_pdf(pdf_path, paper, max_pages=extract_pages)
+                # 只有标记为"需要全文"的论文才下载PDF
+                if need_fulltext:
+                    logger.info(f"  下载全文PDF...")
+                    pdf_path = self.crawler.download_pdf(paper, max_size_mb=max_size_mb)
+                    if pdf_path:
+                        paper['pdf_path'] = pdf_path
                     
-                    # 自动删除PDF
-                    if auto_delete:
-                        self.crawler.cleanup_pdf(pdf_path)
+                    # 提取内容
+                    if pdf_path and os.path.exists(pdf_path):
+                        result = self.extractor.extract_from_pdf(pdf_path, paper, max_pages=extract_pages)
+                        
+                        # 自动删除PDF
+                        if auto_delete:
+                            self.crawler.cleanup_pdf(pdf_path)
+                    else:
+                        logger.warning("  PDF下载失败，使用摘要")
+                        result = self.extractor.extract_from_abstract(paper)
                 else:
+                    # 只使用摘要
+                    logger.info(f"  仅使用摘要（无需全文）")
                     result = self.extractor.extract_from_abstract(paper)
                 
                 all_extracted_contents.append(result)

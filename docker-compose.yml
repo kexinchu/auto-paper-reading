@@ -4,30 +4,23 @@ services:
   paper-reader:
     build: .
     container_name: paper-reader-app
-    ports:
-      - "8089:8089"  # SGLang服务端口
     volumes:
-      - /home/kec23008/docker-sys/llm-security/Models:/app/models
       - ./config.yaml:/app/config.yaml
       - ./topics.yaml:/app/topics.yaml
       - ./downloads:/app/downloads
       - ./logs:/app/logs
     environment:
-      - CUDA_VISIBLE_DEVICES=0
-      - TORCH_CUDA_ARCH_LIST=8.0;8.6;8.9;9.0
-      - SGLANG_ATTENTION_BACKEND=flashinfer
-      - SGLANG_DECODE_ATTENTION_BACKEND=flashinfer
-      - SGLANG_DISABLE_CUDA_GRAPH=1
-      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
-    runtime: nvidia
+      # OpenAI API配置（通过环境变量）
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}
+      # 时区设置
+      - TZ=America/New_York
     restart: unless-stopped
-    shm_size: 16g
-    ulimits:
-      memlock: -1
-      stack: 67108864
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8089/health"]
-      interval: 30s
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 120s
+      start_period: 10s
+    command: python main.py

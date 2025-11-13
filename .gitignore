@@ -51,3 +51,8 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Environment variables (sensitive)
+.env
+*.env
+!.env.example
