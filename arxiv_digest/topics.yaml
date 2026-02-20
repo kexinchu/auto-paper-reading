@@ -1,13 +1,9 @@
-# 主题配置文件
-# 每个主题支持：
-# - name: 主题名称
-# - description: 详细描述（用于LLM判断相关性）
-# - keywords: 关键词列表（用于初步筛选）
-# - required_keywords: 必须包含的关键词（可选）
+# arXiv Digest 主题配置
+# 每个主题必须包含：id（唯一）、name、description；可选 keywords
 
 topics:
-  # 大语言模型优化
-  - name: "大语言模型优化"
+  - id: "llm-opt"
+    name: "大语言模型优化"
     description: "关注大语言模型的训练和推理优化技术，包括KV-Cache优化、Flash Attention、量化技术（INT8/INT4）、模型剪枝、知识蒸馏、混合专家模型(MoE)、高效推理框架等"
     keywords:
       - "LLM"
@@ -27,12 +23,9 @@ topics:
       - "BERT"
       - "LLaMA"
       - "Qwen"
-    # required_keywords:  # 可选：必须包含以下至少一个关键词
-    #   - "optimization"
-    #   - "efficiency"
-    
-  # 计算机系统与内存
-  - name: "计算机系统与内存"
+
+  - id: "systems-memory"
+    name: "计算机系统与内存"
     description: "关注计算机系统架构、内存技术、高性能计算，包括CXL互连技术、RDMA远程直接内存访问、内存管理、分布式系统、存储优化等"
     keywords:
       - "CXL"
@@ -46,9 +39,9 @@ topics:
       - "HPC"
       - "high performance computing"
       - "interconnect"
-    
-  # 多模态与AI智能体
-  - name: "多模态与AI智能体"
+
+  - id: "multimodal-agent"
+    name: "多模态与AI智能体"
     description: "关注多模态学习、视觉语言模型、AI智能体、多任务学习、多智能体协作、具身智能等前沿研究"
     keywords:
       - "multimodal"
@@ -64,8 +57,8 @@ topics:
       - "reasoning"
       - "planning"
 
-  # AI安全与对齐
-  - name: "AI安全与对齐"
+  - id: "ai-safety"
+    name: "AI安全与对齐"
     description: "关注人工智能安全、模型对齐、对抗攻击与防御、隐私保护、可解释性、公平性等AI安全相关研究"
     keywords:
       - "AI safety"
@@ -81,30 +74,3 @@ topics:
       - "robustness"
       - "RLHF"
       - "red teaming"
-
-# 筛选配置
-filtering:
-  # 关键词匹配阈值（0-1）：至少匹配到多少比例的关键词才进入LLM评估
-  keyword_match_threshold: 0.1  # 至少匹配10%的关键词
-  
-  # LLM相关性评分阈值（0-10）
-  min_relevance_score: 6  # 至少6分才保留
-  
-  # LLM质量评分阈值（0-10）
-  min_quality_score: 6  # 论文质量至少6分才保留
-  
-  # 综合评分阈值（相关性 * 权重 + 质量 * 权重）
-  relevance_weight: 0.6  # 相关性权重
-  quality_weight: 0.4    # 质量权重
-  min_combined_score: 6.0  # 综合评分阈值
-  
-  # 每个主题最多保留的论文数量
-  max_papers_per_topic: 10
-  
-  # 是否启用质量评估（关闭则只评估相关性，也不会判断是否需要全文）
-  enable_quality_assessment: true
-  
-  # 注意：启用质量评估时，LLM会自动判断论文是否需要下载全文
-  # - 需要全文：摘要信息不足，或技术细节需要深入了解
-  # - 仅摘要：摘要已足够清楚，或论文质量/相关性一般
-  # 这样可以节省PDF下载时间和后续处理成本

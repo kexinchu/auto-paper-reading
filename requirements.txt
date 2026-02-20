@@ -20,6 +20,14 @@ email-validator==2.1.0
 
 # PDF处理
 PyPDF2==3.0.1
+pymupdf>=1.24.0  # arxiv_digest: PDF text extraction (fitz)
 
 # OpenAI API (支持OpenAI兼容接口)
 openai==1.109.1
+
+# ModelScope（模型下载）
+modelscope
+
+# 本地模型推理服务（vLLM，提供 OpenAI 兼容 API）
+# 需 GPU 与较新驱动，建议在独立环境中安装
+vllm

@@ -1,0 +1,47 @@
+# arXiv Digest 配置文件
+# API 密钥可通过环境变量 OPENAI_API_KEY 覆盖；邮箱密码可通过 ARXIV_DIGEST_SMTP_PASSWORD 覆盖
+
+arxiv:
+  categories:
+    - "cs.AI"
+    - "cs.LG"
+    - "cs.NE"
+    - "cs.RO"
+    - "cs.DC"
+    - "cs.SE"
+    - "cs.DB"
+    - "cs.CR"
+    - "cs.HC"
+    - "cs.IR"
+    - "cs.IT"
+    - "cs.MM"
+    - "cs.NI"
+    - "cs.OS"
+    - "cs.SY"
+  max_results_per_category: 50
+  days_back: 1
+
+model:
+  base_url: "http://127.0.0.1:8000/v1"
+  api_key: "dummy"
+  model_name: "Qwen3-4B"
+  temperature: 0
+  timeout_s: 120
+
+thresholds:
+  relevance: 0.8
+
+storage:
+  db_path: "./data/arxiv.db"
+  pdf_dir: "./data/pdfs"
+  text_dir: "./data/text"
+  save_text: false
+
+email:
+  smtp_host: "smtp.163.com"
+  smtp_port: 465
+  smtp_user: "chu1649158185@163.com"
+  smtp_password: "GRWd7zsXgw8xXDxS"
+  from_addr: "chu1649158185@163.com"
+  to_addr: "ckx.ict@gmail.com"
+  use_tls: true
