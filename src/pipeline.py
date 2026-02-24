@@ -87,7 +87,6 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> None:
                 try:
                     raw_s1 = model_client.chat_completion(client, model_name, repair_msg, temperature=0, max_tokens=2048, timeout_s=timeout_s)
                     stage1 = model_client.parse_stage1_json(raw_s1, arxiv_id)
-                    logger.info(f"Stage1 JSON repair successful for {arxiv_id}: {raw_s1}")
                 except (ValueError, Exception) as e2:
                     logger.warning("Stage1 JSON repair failed for %s: %s", arxiv_id, e2)
                     db.mark_status(db_path, arxiv_id, db.FAILED, error_message=str(e2))
@@ -102,10 +101,10 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> None:
                 (t.get("relevance", 0) for t in stage1.get("topics", [])),
                 default=0,
             )
-            # if max_relevance < threshold:
-            #     db.mark_status(db_path, arxiv_id, db.SKIPPED)
-            #     logger.info("Skip %s (relevance %.2f < %.2f)", arxiv_id, max_relevance, threshold)
-            #     continue
+            if max_relevance < threshold:
+                db.mark_status(db_path, arxiv_id, db.SKIPPED)
+                logger.info("Skip %s (relevance %.2f < %.2f)", arxiv_id, max_relevance, threshold)
+                continue
 
             db.mark_status(db_path, arxiv_id, db.STAGE1_RELEVANT)
 

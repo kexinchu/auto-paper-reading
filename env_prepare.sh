@@ -8,7 +8,7 @@ cd "$SCRIPT_DIR"
 # 可配置项（也可通过环境变量覆盖）
 PORT="${MODEL_SERVER_PORT:-8000}"
 MODEL_DIR="${MODEL_DIR:-$SCRIPT_DIR/Models/Qwen3-4B}"
-CHECK_INTERVAL_MINUTES="${CHECK_INTERVAL_MINUTES:-109}"
+CHECK_INTERVAL_MINUTES="${CHECK_INTERVAL_MINUTES:-10}"
 PID_FILE="$SCRIPT_DIR/.model_server.pid"
 LOG_FILE="$SCRIPT_DIR/model_server.log"
 
@@ -52,10 +52,12 @@ fi
 start_server() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] 启动模型推理服务: $MODEL_DIR, 端口 $PORT"
   # 后台启动 vLLM OpenAI 兼容服务；日志追加到文件
+  # --served-model-name 使 /v1/models 返回的 id 与 config 中 model_name 一致
   nohup python -u -m vllm.entrypoints.openai.api_server \
     --host 0.0.0.0 \
     --port "$PORT" \
     --model "$MODEL_DIR" \
+    --served-model-name Qwen3-4B \
     >> "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
   echo "     PID: $(cat "$PID_FILE")，日志: $LOG_FILE"
@@ -111,7 +113,7 @@ echo "     健康检查: http://127.0.0.1:$PORT/health"
 echo "==> 每 ${CHECK_INTERVAL_MINUTES} 分钟检测一次可用性，不可用时自动重启"
 echo ""
 
-# 每 109 分钟检测一次，不可用则重启
+# 每 10 分钟检测一次，不可用则重启
 while true; do
   sleep $((CHECK_INTERVAL_MINUTES * 60))
   restart_if_needed

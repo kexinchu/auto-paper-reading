@@ -62,6 +62,10 @@ def _normalize_json_raw(raw: str) -> str:
     return s
 
 
+# 后台程序重启 LLM 的间隔（秒），失败后等待此时长再尝试一次
+WAIT_AFTER_FAILURE_SEC = 600
+
+
 def chat_completion(
     client: OpenAI,
     model_name: str,
@@ -74,6 +78,7 @@ def chat_completion(
 ) -> str:
     """
     Call /chat/completions. Returns content string. Raises on final failure.
+    After retries exhausted, waits WAIT_AFTER_FAILURE_SEC (10 min) for LLM restart then tries once more.
     """
     last_err = None
     for attempt in range(max_retries):
@@ -90,13 +95,12 @@ def chat_completion(
             raise ValueError("Empty completion")
         except Exception as e:
             last_err = e
-            delay = base_delay * (2 ** attempt)
             logger.warning(
                 "Model API call failed (attempt %s/%s): %s; retry in %.1fs",
-                attempt + 1, max_retries, e, delay,
+                attempt + 1, max_retries, e, WAIT_AFTER_FAILURE_SEC,
             )
             if attempt < max_retries - 1:
-                time.sleep(delay)
+                time.sleep(WAIT_AFTER_FAILURE_SEC)
     raise last_err or RuntimeError("Model call failed")
 
 
