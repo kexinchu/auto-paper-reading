@@ -57,7 +57,7 @@ def download_pdf(
 def extract_text_fitz(pdf_path: str | Path, use_ocr: bool = False) -> str:
     """
     Extract text from PDF using PyMuPDF. Returns concatenated page text.
-    If use_ocr is True and text is empty, we could call OCR (not implemented here to keep deps minimal).
+    Tries "text" first; if empty, falls back to building from "dict" blocks.
     """
     if fitz is None:
         raise RuntimeError("PyMuPDF (fitz) is not installed. pip install pymupdf")
@@ -71,8 +71,22 @@ def extract_text_fitz(pdf_path: str | Path, use_ocr: bool = False) -> str:
             text = page.get_text("text", sort=True)
             if text and text.strip():
                 parts.append(text.strip())
-        out = "\n\n".join(parts)
-        if not out.strip() and use_ocr:
+            elif not text or not text.strip():
+                # Fallback: build from dict blocks (sometimes yields text when "text" is empty)
+                try:
+                    d = page.get_text("dict", sort=True)
+                    for block in d.get("blocks", []):
+                        for line in block.get("lines", []):
+                            for span in line.get("spans", []):
+                                t = (span.get("text") or "").strip()
+                                if t:
+                                    parts.append(t)
+                except Exception:
+                    pass
+        out = "\n\n".join(parts) if parts else ""
+        n = len(out.strip())
+        logger.info("PDF text extracted: %s -> %d chars", path.name, n)
+        if n == 0 and use_ocr:
             logger.warning("No text extracted from %s; OCR requested but not implemented", path)
         return out
     finally:

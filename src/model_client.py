@@ -12,6 +12,56 @@ from openai import OpenAI
 logger = logging.getLogger(__name__)
 
 
+def _strip_think_tags(s: str) -> str:
+    """Remove <think>...</think> block if present (Qwen etc. output reasoning in think tags)."""
+    lower = s.lstrip()
+    if lower.startswith("<think>"):
+        close_tag = "</" + "think>"
+        end = s.find(close_tag)
+        if end != -1:
+            s = s[end + len(close_tag) :].lstrip()
+        else:
+            s = s[7:].lstrip()
+    return s
+
+
+def _extract_json_object(s: str) -> str:
+    """Find first { and matching } to extract a single JSON object."""
+    start = s.find("{")
+    if start == -1:
+        raise ValueError("No '{' found in model output")
+    depth = 0
+    for i in range(start, len(s)):
+        if s[i] == "{":
+            depth += 1
+        elif s[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start : i + 1]
+    raise ValueError("No matching '}' for JSON object")
+
+
+def _normalize_json_raw(raw: str) -> str:
+    """Strip think tags, markdown fences, then extract JSON for json.loads."""
+    if not raw or not raw.strip():
+        raise ValueError("Model returned empty or whitespace-only content")
+    s = raw.strip()
+    s = _strip_think_tags(s)
+    s = s.strip()
+    if not s:
+        raise ValueError("Model returned only think/reasoning, no JSON")
+    if s.startswith("```"):
+        lines = s.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        s = "\n".join(lines).strip()
+    if not s.startswith("{"):
+        s = _extract_json_object(s)
+    return s
+
+
 def chat_completion(
     client: OpenAI,
     model_name: str,
@@ -56,8 +106,14 @@ def parse_stage1_json(raw: str, paper_id: str) -> dict[str, Any]:
     Raises ValueError on parse/schema failure.
     """
     try:
-        data = json.loads(raw)
+        s = _normalize_json_raw(raw)
+    except ValueError as e:
+        logger.debug("Stage1 raw (first 400 chars): %r", (raw or "")[:400])
+        raise ValueError(f"Invalid JSON: {e}") from e
+    try:
+        data = json.loads(s)
     except json.JSONDecodeError as e:
+        logger.warning("Stage1 JSON parse error for %s; raw snippet: %r", paper_id, (raw or "")[:400])
         raise ValueError(f"Invalid JSON: {e}") from e
 
     if not isinstance(data, dict):
@@ -92,8 +148,14 @@ def parse_stage2_json(raw: str, paper_id: str) -> dict[str, Any]:
     Parse Stage-2 summary JSON. Validate types and clamp relevance.
     """
     try:
-        data = json.loads(raw)
+        s = _normalize_json_raw(raw)
+    except ValueError as e:
+        logger.debug("Stage2 raw (first 400 chars): %r", (raw or "")[:400])
+        raise ValueError(f"Invalid JSON: {e}") from e
+    try:
+        data = json.loads(s)
     except json.JSONDecodeError as e:
+        logger.warning("Stage2 JSON parse error for %s; raw snippet: %r", paper_id, (raw or "")[:400])
         raise ValueError(f"Invalid JSON: {e}") from e
 
     if not isinstance(data, dict):
@@ -139,7 +201,8 @@ def build_stage1_prompt(topics_config: list[dict], paper: dict[str, Any]) -> lis
     )
     system = (
         "You are a classifier. For each paper, assign each topic a relevance score in [0, 1] "
-        "and give a short reason (<=40 words). Output ONLY valid JSON, no markdown."
+        "and give a short reason (<=40 words). Output ONLY a single valid JSON object: no <think>, "
+        "no reasoning text, no markdown, no explanation. Start your response with {."
     )
     user = (
         f"Topics:\n{topics_desc}\n\nPaper:\n{paper_blob}\n\n"

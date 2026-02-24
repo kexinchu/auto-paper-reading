@@ -82,8 +82,14 @@ def send_digest_email(
     msg["To"] = to_addr
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
-    if use_tls:
-        context = ssl.create_default_context()
+    context = ssl.create_default_context()
+    # 465 为隐式 SSL，必须用 SMTP_SSL；587 为显式 TLS，用 SMTP + starttls
+    if smtp_port == 465:
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
+            if smtp_user and smtp_password:
+                server.login(smtp_user, smtp_password)
+            server.sendmail(from_addr, [to_addr], msg.as_string())
+    elif use_tls:
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.starttls(context=context)
             if smtp_user and smtp_password:

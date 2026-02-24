@@ -1,4 +1,4 @@
-"""Run with: python -m arxiv_digest"""
+"""Run with: python -m src"""
 
 from .cli import main
 import sys

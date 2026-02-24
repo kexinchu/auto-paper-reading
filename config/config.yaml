@@ -6,25 +6,25 @@ arxiv:
     - "cs.AI"
     - "cs.LG"
     - "cs.NE"
-    - "cs.RO"
-    - "cs.DC"
-    - "cs.SE"
-    - "cs.DB"
-    - "cs.CR"
-    - "cs.HC"
-    - "cs.IR"
-    - "cs.IT"
-    - "cs.MM"
-    - "cs.NI"
-    - "cs.OS"
-    - "cs.SY"
+    # - "cs.RO"
+    # - "cs.DC"
+    # - "cs.SE"
+    # - "cs.DB"
+    # - "cs.CR"
+    # - "cs.HC"
+    # - "cs.IR"
+    # - "cs.IT"
+    # - "cs.MM"
+    # - "cs.NI"
+    # - "cs.OS"
+    # - "cs.SY"
   max_results_per_category: 50
   days_back: 1
 
 model:
   base_url: "http://127.0.0.1:8000/v1"
   api_key: "dummy"
-  model_name: "Qwen3-4B"
+  model_name: "/home/kec23008/auto-paper-reading/Models/Qwen3-4B"  # 与 vLLM /v1/models 返回的 id 一致
   temperature: 0
   timeout_s: 120
 

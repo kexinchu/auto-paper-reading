@@ -12,39 +12,41 @@ CHECK_INTERVAL_MINUTES="${CHECK_INTERVAL_MINUTES:-109}"
 PID_FILE="$SCRIPT_DIR/.model_server.pid"
 LOG_FILE="$SCRIPT_DIR/model_server.log"
 
+# 检测环境是否就绪：无 venv 则创建，有则直接激活
 if [[ ! -d "$SCRIPT_DIR/venv" ]]; then
-  echo "错误: 未找到 venv，请先执行 ./env_prepare.sh"
-  exit 1
+  echo "==> 创建 Python 虚拟环境 (venv) ..."
+  python3 -m venv "$SCRIPT_DIR/venv"
+  echo "==> 激活虚拟环境并安装依赖 ..."
+  # shellcheck source=/dev/null
+  source "$SCRIPT_DIR/venv/bin/activate"
+  pip install --upgrade pip
+  pip install -r requirements.txt
+else
+  echo "==> 虚拟环境已存在，跳过创建"
+  source "$SCRIPT_DIR/venv/bin/activate"
 fi
 
-echo "==> 创建 Python 虚拟环境 (venv) ..."
-python3 -m venv venv
 
-echo "==> 激活虚拟环境并安装依赖 ..."
-# shellcheck source=/dev/null
-source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-
-echo "==> 安装 ModelScope 并下载模型到 ./Models/Qwen3-4B ..."
-pip install modelscope
-mkdir -p ./Models
-modelscope download --model Qwen/Qwen3-4B --local_dir ./Models/Qwen3-4B
-
-# 激活虚拟环境
-# shellcheck source=/dev/null
-source "$SCRIPT_DIR/venv/bin/activate"
-
-# 若未安装 vLLM，则安装推理依赖
-if ! python -c "import vllm" 2>/dev/null; then
-  echo "==> 安装推理依赖 (vLLM) ..."
-  pip install -r requirements-inference.txt
+MODEL_LOCAL_DIR="$SCRIPT_DIR/Models/Qwen3-4B"
+if [[ -d "$MODEL_LOCAL_DIR" ]] && [[ -n "$(ls -A "$MODEL_LOCAL_DIR" 2>/dev/null)" ]]; then
+  echo "==> 模型目录已存在，跳过下载: $MODEL_LOCAL_DIR"
+else
+  pip install modelscope
+  echo "==> 从 ModelScope 下载模型到 ./Models/Qwen3-4B ..."
+  mkdir -p "$SCRIPT_DIR/Models"
+  modelscope download --model Qwen/Qwen3-4B --local_dir "$MODEL_LOCAL_DIR"
 fi
 
-if [[ ! -d "$MODEL_DIR" ]]; then
-  echo "错误: 模型目录不存在: $MODEL_DIR"
-  echo "请先执行 ./env_prepare.sh 下载模型"
-  exit 1
+# 检测并初始化 SQLite 与存储目录（依赖 config/config.yaml）
+if [[ -f "$SCRIPT_DIR/config/config.yaml" ]]; then
+  if [[ -f "$SCRIPT_DIR/data/arxiv.db" ]]; then
+    echo "==> SQLite 已存在: ./data/arxiv.db"
+  else
+    echo "==> 初始化 SQLite 与存储目录 ..."
+    PYTHONPATH="$SCRIPT_DIR" python3 "$SCRIPT_DIR/tests/setup_storage_db.py"
+  fi
+else
+  echo "==> 跳过 DB 初始化（未找到 config/config.yaml）"
 fi
 
 start_server() {

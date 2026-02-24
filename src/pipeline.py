@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 def run_pipeline(config_path: str | Path, topics_path: str | Path) -> None:
     """
     Load config and topics, ensure DB/storage dirs, fetch papers, then process each.
-    Skips papers that are already processed or in progress. On per-paper failure, mark FAILED and continue.
+    SQL 使用约定：
+    1) 表不存在时：ensure_db(db_path) 创建 papers 表（CREATE TABLE IF NOT EXISTS）。
+    2) 送 LLM 前：用 is_in_progress_or_processed(db_path, arxiv_id) 检查，已处理或进行中则跳过。
+    3) 每步完成后：mark_status / upsert_paper_metadata 写入状态，用于后续去重与断点续跑。
+    4) 测试清空表：可运行 tests/clear_papers_db.py 清空 papers 表数据。
     """
     config = load_config(config_path)
     topics_list = load_topics(topics_path)
@@ -75,11 +79,15 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> None:
             try:
                 stage1 = model_client.parse_stage1_json(raw_s1, arxiv_id)
             except ValueError as e:
-                logger.warning("Stage1 JSON parse failed for %s, retry with repair: %s", arxiv_id, e)
+                logger.warning(
+                    "Stage1 JSON parse failed for %s, retry with repair: %s | raw_s1[:500]=%r",
+                    arxiv_id, e, (raw_s1 or "")[:500],
+                )
                 repair_msg = [{"role": "user", "content": "Return only valid JSON, no markdown or explanation. Your previous reply had errors.\n\n" + raw_s1[:8000]}]
                 try:
                     raw_s1 = model_client.chat_completion(client, model_name, repair_msg, temperature=0, max_tokens=2048, timeout_s=timeout_s)
                     stage1 = model_client.parse_stage1_json(raw_s1, arxiv_id)
+                    logger.info(f"Stage1 JSON repair successful for {arxiv_id}: {raw_s1}")
                 except (ValueError, Exception) as e2:
                     logger.warning("Stage1 JSON repair failed for %s: %s", arxiv_id, e2)
                     db.mark_status(db_path, arxiv_id, db.FAILED, error_message=str(e2))
@@ -94,10 +102,10 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> None:
                 (t.get("relevance", 0) for t in stage1.get("topics", [])),
                 default=0,
             )
-            if max_relevance < threshold:
-                db.mark_status(db_path, arxiv_id, db.SKIPPED)
-                logger.info("Skip %s (relevance %.2f < %.2f)", arxiv_id, max_relevance, threshold)
-                continue
+            # if max_relevance < threshold:
+            #     db.mark_status(db_path, arxiv_id, db.SKIPPED)
+            #     logger.info("Skip %s (relevance %.2f < %.2f)", arxiv_id, max_relevance, threshold)
+            #     continue
 
             db.mark_status(db_path, arxiv_id, db.STAGE1_RELEVANT)
 
@@ -116,13 +124,16 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> None:
                 full_text = pdf_utils.extract_text(pdf_path, use_ocr=False)
             except Exception as e:
                 logger.warning("Text extraction failed for %s: %s", arxiv_id, e)
-                full_text = "[Extraction failed: " + str(e) + "]"
+                db.mark_status(db_path, arxiv_id, db.FAILED, error_message=f"PDF text extraction: {e}")
+                continue
             if save_text:
                 (text_dir / f"{arxiv_id}.txt").write_text(full_text, encoding="utf-8")
+            n_chars = len(full_text.strip())
+            if full_text.strip().startswith("[Extraction failed:") or n_chars < 100:
+                logger.warning("PDF text extraction ineffective for %s (%d chars); skip Stage2", arxiv_id, n_chars)
+                db.mark_status(db_path, arxiv_id, db.FAILED, error_message=f"PDF text too short or extraction failed ({n_chars} chars)")
+                continue
             db.mark_status(db_path, arxiv_id, db.TEXT_EXTRACTED)
-
-            if not full_text or len(full_text.strip()) < 50:
-                logger.warning("Very little text extracted for %s; proceeding with what we have", arxiv_id)
 
             # Stage 2
             messages_s2 = model_client.build_stage2_prompt(
