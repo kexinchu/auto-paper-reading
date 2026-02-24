@@ -40,8 +40,8 @@ storage:
 email:
   smtp_host: "smtp.163.com"
   smtp_port: 465
-  smtp_user: "chu1649158185@163.com"
-  smtp_password: "GRWd7zsXgw8xXDxS"
-  from_addr: "chu1649158185@163.com"
-  to_addr: "ckx.ict@gmail.com"
+  smtp_user: "*@163.com"
+  smtp_password: "*"
+  from_addr: "*@163.com"
+  to_addr: "*@gmail.com"
   use_tls: true

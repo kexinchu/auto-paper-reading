@@ -26,3 +26,11 @@ bash env_prepare.sh
 # 执行
 python3 -m src --config config/config.yaml --topics config/topics.yaml
 ```
+
+2, **统一入口脚本 + 周期执行命令**
+```bash
+bash run.sh
+
+# 每天 8:00 执行 run.sh，日志写到项目下 logs/run.log
+0 8 * * * cd /path/to/auto-paper-reading && bash run.sh >> /path/to/auto-paper-reading/logs/run.log 2>&1
+```

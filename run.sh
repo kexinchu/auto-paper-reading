@@ -9,7 +9,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-CONFIG="${RUN_CONFIG:-config/config.yaml}"
+CONFIG="${RUN_CONFIG:-config/config_kexin.yaml}"
 TOPICS="${RUN_TOPICS:-config/topics.yaml}"
 PORT="${MODEL_SERVER_PORT:-8000}"
 RETRY_INTERVAL_SEC="${RETRY_INTERVAL_SEC:-3600}"
@@ -28,7 +28,7 @@ ensure_llm() {
     return 0
   fi
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] LLM 不可用，启动 env_prepare.sh ..."
-  nohup bash "$SCRIPT_DIR/env_prepare.sh" >> "$SCRIPT_DIR/env_prepare_run.log" 2>&1 &
+  nohup bash "$SCRIPT_DIR/env_prepare.sh" >> "$SCRIPT_DIR/logs/env_prepare_run.log" 2>&1 &
   echo $! > "$ENV_PREPARE_PID_FILE"
   local waited=0
   while (( waited < HEALTH_WAIT_MAX_SEC )); do
@@ -52,6 +52,20 @@ run_pipeline() {
     source "$SCRIPT_DIR/venv/bin/activate"
   fi
   python3 -m src --config "$SCRIPT_DIR/$CONFIG" --topics "$SCRIPT_DIR/$TOPICS"
+}
+
+# 清理本次下载的 PDF 文件（与 config storage.pdf_dir 一致）
+PDF_DIR="${PDF_DIR:-$SCRIPT_DIR/data/pdfs}"
+
+clear_downloaded_pdfs() {
+  if [[ -d "$PDF_DIR" ]]; then
+    local n
+    n=$(find "$PDF_DIR" -maxdepth 1 -type f -name "*.pdf" 2>/dev/null | wc -l)
+    if [[ "${n:-0}" -gt 0 ]]; then
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] 清理下载的 PDF: $PDF_DIR ($n 个文件)"
+      find "$PDF_DIR" -maxdepth 1 -type f -name "*.pdf" -delete 2>/dev/null || true
+    fi
+  fi
 }
 
 # 成功退出前：关闭 LLM 服务及本次启动的 env_prepare，释放 GPU
@@ -85,7 +99,8 @@ while true; do
   ensure_llm || true
   if run_pipeline; then
     stop_llm_and_env_prepare
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] pipeline 执行成功，已关闭 LLM，退出"
+    clear_downloaded_pdfs
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] pipeline 执行成功，已关闭 LLM、清理 PDF，退出"
     exit 0
   fi
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] pipeline 未完全成功，${RETRY_INTERVAL_SEC}s 后重试"
