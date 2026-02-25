@@ -22,22 +22,36 @@ def _parse_arxiv_id(entry_id: str) -> str:
     return entry_id.rstrip("/").split("/")[-1].replace(".pdf", "")
 
 
+def _is_rate_limit(err: Exception) -> bool:
+    """Check if error is HTTP 429 (rate limit). arxiv.HTTPError uses .status."""
+    code = getattr(err, "status", None) or getattr(err, "status_code", None) or getattr(err, "code", None)
+    if code == 429:
+        return True
+    if "429" in str(err):
+        return True
+    return False
+
+
 def fetch_papers(
     categories: list[str],
     max_results_per_category: int,
     days_back: int = 1,
-    max_retries: int = 3,
+    max_retries: int = 5,
     base_delay: float = 2.0,
+    delay_between_categories: float = 3.0,
 ) -> list[dict[str, Any]]:
     """
     Fetch papers from arXiv for each category, filtered by published date within days_back.
     Returns list of dicts: arxiv_id, title, authors, categories, published, updated, abstract, pdf_url.
+    Uses longer backoff on HTTP 429 (rate limit) and a delay between categories to avoid throttling.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
     seen_ids: set[str] = set()
     all_papers: list[dict[str, Any]] = []
 
-    for cat in categories:
+    for i, cat in enumerate(categories):
+        if i > 0:
+            time.sleep(delay_between_categories)
         query = f"cat:{cat}"
         before = len(all_papers)
         for attempt in range(max_retries):
@@ -71,11 +85,18 @@ def fetch_papers(
                 logger.info("Fetched category %s: %d papers", cat, len(all_papers) - before)
                 break
             except Exception as e:
-                delay = base_delay * (2 ** attempt)
-                logger.warning(
-                    "arXiv fetch failed for %s (attempt %s/%s): %s; retry in %.1fs",
-                    cat, attempt + 1, max_retries, e, delay,
-                )
+                if _is_rate_limit(e):
+                    delay = 60.0 * (2 ** attempt)  # 60s, 120s, 240s, ... for 429
+                    logger.warning(
+                        "arXiv rate limit (429) for %s (attempt %s/%s); retry in %.0fs",
+                        cat, attempt + 1, max_retries, delay,
+                    )
+                else:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        "arXiv fetch failed for %s (attempt %s/%s): %s; retry in %.1fs",
+                        cat, attempt + 1, max_retries, e, delay,
+                    )
                 if attempt == max_retries - 1:
                     raise
                 time.sleep(delay)

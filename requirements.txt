@@ -15,6 +15,9 @@ pytz==2023.3
 arxiv==2.1.0
 feedparser==6.0.10
 
+# Google Scholar（按关键词搜索，仅第一页）
+scholarly>=1.7.0
+
 # 邮件处理
 email-validator==2.1.0
 

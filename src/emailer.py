@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 def format_email_body(
     summary: dict[str, Any],
     pdf_path: str | Path | None = None,
-    include_json: bool = True,
+    include_json: bool = False,
 ) -> str:
     """Plain text body: sections + optional JSON at bottom."""
     lines = [

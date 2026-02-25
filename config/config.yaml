@@ -21,6 +21,25 @@ arxiv:
   max_results_per_category: 50
   days_back: 1
 
+# 可选：从 Google Scholar 按关键词搜索。常遇验证码且需 Chrome/Firefox+Geckodriver，否则返回 0 条
+scholar:
+  enabled: false
+  queries:
+    - "large language model reasoning"
+    - "vision language model"
+  max_per_query: 10
+
+# 推荐：Semantic Scholar API 按关键词搜索，无需浏览器/内核，无验证码
+# 遇 429 时会自动重试并退避；调大 delay_between_queries 可减少限流
+semantic_scholar:
+  enabled: true
+  queries:
+    - "large language model reasoning"
+    - "vision language model"
+  limit: 10
+  delay_between_queries: 8   # 每个关键词请求间隔(秒)，减小 429
+  max_retries_429: 3        # 429 时重试次数
+
 model:
   base_url: "http://127.0.0.1:8000/v1"
   api_key: "dummy"

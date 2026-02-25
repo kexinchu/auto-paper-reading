@@ -51,11 +51,44 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> None:
     threshold = config["thresholds"]["relevance"]
 
     arxiv_cfg = config["arxiv"]
-    papers = arxiv_client.fetch_papers(
+    papers = list(arxiv_client.fetch_papers(
         categories=arxiv_cfg["categories"],
         max_results_per_category=arxiv_cfg["max_results_per_category"],
         days_back=arxiv_cfg.get("days_back", 1),
-    )
+    ))
+    seen_ids = {p["arxiv_id"] for p in papers}
+
+    # Google Scholar — errors (e.g. captcha, missing browser) are raised so you can fix them
+    scholar_cfg = config.get("scholar") or {}
+    if scholar_cfg.get("enabled") and scholar_cfg.get("queries"):
+        from . import scholar_client
+        scholar_papers = scholar_client.fetch_papers(
+            queries=scholar_cfg["queries"],
+            max_per_query=scholar_cfg.get("max_per_query", 10),
+        )
+        for p in scholar_papers:
+            if p["arxiv_id"] not in seen_ids:
+                papers.append(p)
+                seen_ids.add(p["arxiv_id"])
+
+    # Semantic Scholar API (no browser, no captcha; recommended when Scholar fails)
+    ss_cfg = config.get("semantic_scholar") or {}
+    if ss_cfg.get("enabled") and ss_cfg.get("queries"):
+        try:
+            from . import semantic_scholar_client
+            ss_papers = semantic_scholar_client.fetch_papers(
+                queries=ss_cfg["queries"],
+                limit=ss_cfg.get("limit", 10),
+                delay_between_queries=ss_cfg.get("delay_between_queries", 8.0),
+                max_retries_429=ss_cfg.get("max_retries_429", 3),
+            )
+            for p in ss_papers:
+                if p["arxiv_id"] not in seen_ids:
+                    papers.append(p)
+                    seen_ids.add(p["arxiv_id"])
+        except Exception as e:
+            logger.warning("Semantic Scholar fetch failed: %s", e)
+
     logger.info("Fetched %d papers; starting pipeline", len(papers))
 
     for paper in papers:
@@ -108,31 +141,65 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> None:
 
             db.mark_status(db_path, arxiv_id, db.STAGE1_RELEVANT)
 
-            # Download PDF
-            pdf_path = pdf_dir / f"{arxiv_id}.pdf"
-            try:
-                pdf_utils.download_pdf(paper["pdf_url"], pdf_path, timeout_s=90)
-            except Exception as e:
-                logger.exception("PDF download failed for %s: %s", arxiv_id, e)
-                db.mark_status(db_path, arxiv_id, db.FAILED, error_message=f"PDF: {e}")
-                continue
-            db.mark_status(db_path, arxiv_id, db.PDF_DOWNLOADED)
-
-            # Extract text
-            try:
-                full_text = pdf_utils.extract_text(pdf_path, use_ocr=False)
-            except Exception as e:
-                logger.warning("Text extraction failed for %s: %s", arxiv_id, e)
-                db.mark_status(db_path, arxiv_id, db.FAILED, error_message=f"PDF text extraction: {e}")
-                continue
-            if save_text:
-                (text_dir / f"{arxiv_id}.txt").write_text(full_text, encoding="utf-8")
-            n_chars = len(full_text.strip())
-            if full_text.strip().startswith("[Extraction failed:") or n_chars < 100:
-                logger.warning("PDF text extraction ineffective for %s (%d chars); skip Stage2", arxiv_id, n_chars)
-                db.mark_status(db_path, arxiv_id, db.FAILED, error_message=f"PDF text too short or extraction failed ({n_chars} chars)")
-                continue
-            db.mark_status(db_path, arxiv_id, db.TEXT_EXTRACTED)
+            pdf_path = None
+            if paper.get("pdf_url"):
+                # Download PDF (fallback to abstract on deny/403/etc.)
+                pdf_path = pdf_dir / f"{arxiv_id}.pdf"
+                try:
+                    pdf_utils.download_pdf(paper["pdf_url"], pdf_path, timeout_s=90)
+                except Exception as e:
+                    logger.warning(
+                        "PDF download failed for %s (%s); using abstract as fallback",
+                        arxiv_id, e,
+                    )
+                    pdf_path = None
+                    full_text = (paper.get("abstract") or "").strip() or "(No abstract)"
+                    if len(full_text) < 50:
+                        logger.warning("Abstract too short for %s; skip Stage2", arxiv_id)
+                        db.mark_status(db_path, arxiv_id, db.FAILED, error_message="PDF failed and abstract too short")
+                        continue
+                    db.mark_status(db_path, arxiv_id, db.TEXT_EXTRACTED)
+                else:
+                    db.mark_status(db_path, arxiv_id, db.PDF_DOWNLOADED)
+                    try:
+                        full_text = pdf_utils.extract_text(pdf_path, use_ocr=False)
+                    except Exception as e:
+                        logger.warning(
+                            "Text extraction failed for %s (%s); using abstract as fallback",
+                            arxiv_id, e,
+                        )
+                        pdf_path = None
+                        full_text = (paper.get("abstract") or "").strip() or "(No abstract)"
+                        if len(full_text) < 50:
+                            db.mark_status(db_path, arxiv_id, db.FAILED, error_message=f"PDF text extraction: {e}")
+                            continue
+                        db.mark_status(db_path, arxiv_id, db.TEXT_EXTRACTED)
+                    else:
+                        if save_text:
+                            (text_dir / f"{arxiv_id}.txt").write_text(full_text, encoding="utf-8")
+                        n_chars = len(full_text.strip())
+                        if full_text.strip().startswith("[Extraction failed:") or n_chars < 100:
+                            fallback = (paper.get("abstract") or "").strip() or "(No abstract)"
+                            if len(fallback) >= 50:
+                                logger.warning(
+                                    "PDF text ineffective for %s (%d chars); using abstract as fallback",
+                                    arxiv_id, n_chars,
+                                )
+                                full_text = fallback
+                                pdf_path = None
+                            else:
+                                logger.warning("PDF text bad and abstract too short for %s; skip Stage2", arxiv_id)
+                                db.mark_status(db_path, arxiv_id, db.FAILED, error_message=f"PDF text too short ({n_chars} chars)")
+                                continue
+                        db.mark_status(db_path, arxiv_id, db.TEXT_EXTRACTED)
+            else:
+                # No PDF (e.g. Scholar-only): use abstract for Stage2
+                full_text = (paper.get("abstract") or "").strip() or "(No abstract)"
+                if len(full_text) < 50:
+                    logger.warning("No PDF and abstract too short for %s; skip Stage2", arxiv_id)
+                    db.mark_status(db_path, arxiv_id, db.FAILED, error_message="No PDF and abstract too short")
+                    continue
+                db.mark_status(db_path, arxiv_id, db.TEXT_EXTRACTED)
 
             # Stage 2
             messages_s2 = model_client.build_stage2_prompt(

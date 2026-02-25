@@ -15,8 +15,8 @@ PORT="${MODEL_SERVER_PORT:-8000}"
 RETRY_INTERVAL_SEC="${RETRY_INTERVAL_SEC:-3600}"
 HEALTH_WAIT_MAX_SEC="${HEALTH_WAIT_MAX_SEC:-600}"
 HEALTH_POLL_SEC="${HEALTH_POLL_SEC:-15}"
-PID_FILE="$SCRIPT_DIR/.model_server.pid"
-ENV_PREPARE_PID_FILE="$SCRIPT_DIR/.run_env_prepare.pid"
+PID_FILE="$SCRIPT_DIR/logs/model_server.pid"
+ENV_PREPARE_PID_FILE="$SCRIPT_DIR/logs/run_env_prepare.pid"
 
 health_ok() {
   curl -sf -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -q 200

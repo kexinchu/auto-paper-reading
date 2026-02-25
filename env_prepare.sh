@@ -9,7 +9,7 @@ cd "$SCRIPT_DIR"
 PORT="${MODEL_SERVER_PORT:-8000}"
 MODEL_DIR="${MODEL_DIR:-$SCRIPT_DIR/Models/Qwen3-4B}"
 CHECK_INTERVAL_MINUTES="${CHECK_INTERVAL_MINUTES:-10}"
-PID_FILE="$SCRIPT_DIR/.model_server.pid"
+PID_FILE="$SCRIPT_DIR/logs/model_server.pid"
 LOG_FILE="$SCRIPT_DIR/logs/model_server.log"
 
 # 检测环境是否就绪：无 venv 则创建，有则直接激活

@@ -85,3 +85,19 @@ def validate_config(c: dict[str, Any]) -> None:
         email_c["use_tls"] = True
     if not isinstance(email_c["use_tls"], bool):
         raise ValueError("config.email.use_tls must be bool")
+
+    # Optional: Google Scholar (enabled + queries; may get captcha without browser)
+    if "scholar" in c:
+        sc = c["scholar"]
+        if not isinstance(sc.get("enabled"), bool):
+            raise ValueError("config.scholar.enabled must be bool when scholar section is present")
+        if sc.get("enabled") and (not isinstance(sc.get("queries"), list) or not sc["queries"]):
+            raise ValueError("config.scholar.queries must be a non-empty list when scholar is enabled")
+
+    # Optional: Semantic Scholar API (no browser, no captcha; recommended if Scholar fails)
+    if "semantic_scholar" in c:
+        ss = c["semantic_scholar"]
+        if not isinstance(ss.get("enabled"), bool):
+            raise ValueError("config.semantic_scholar.enabled must be bool when section is present")
+        if ss.get("enabled") and (not isinstance(ss.get("queries"), list) or not ss["queries"]):
+            raise ValueError("config.semantic_scholar.queries must be a non-empty list when enabled")
