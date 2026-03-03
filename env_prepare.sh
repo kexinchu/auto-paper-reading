@@ -7,7 +7,7 @@ cd "$SCRIPT_DIR"
 
 # 可配置项（也可通过环境变量覆盖）
 PORT="${MODEL_SERVER_PORT:-8000}"
-MODEL_DIR="${MODEL_DIR:-$SCRIPT_DIR/Models/Qwen3-4B}"
+MODEL_DIR="${MODEL_DIR:-$SCRIPT_DIR/Models/Qwen3.5-9B}"
 CHECK_INTERVAL_MINUTES="${CHECK_INTERVAL_MINUTES:-10}"
 PID_FILE="$SCRIPT_DIR/logs/model_server.pid"
 LOG_FILE="$SCRIPT_DIR/logs/model_server.log"
@@ -27,14 +27,14 @@ else
 fi
 
 
-MODEL_LOCAL_DIR="$SCRIPT_DIR/Models/Qwen3-4B"
+MODEL_LOCAL_DIR="$SCRIPT_DIR/Models/Qwen3.5-9B"
 if [[ -d "$MODEL_LOCAL_DIR" ]] && [[ -n "$(ls -A "$MODEL_LOCAL_DIR" 2>/dev/null)" ]]; then
   echo "==> 模型目录已存在，跳过下载: $MODEL_LOCAL_DIR"
 else
   pip install modelscope
-  echo "==> 从 ModelScope 下载模型到 ./Models/Qwen3-4B ..."
+  echo "==> 从 ModelScope 下载模型到 ./Models/Qwen3.5-9B ..."
   mkdir -p "$SCRIPT_DIR/Models"
-  modelscope download --model Qwen/Qwen3-4B --local_dir "$MODEL_LOCAL_DIR"
+  modelscope download --model Qwen/Qwen3.5-9B --local_dir "$MODEL_LOCAL_DIR"
 fi
 
 # 检测并初始化 SQLite 与存储目录（依赖 config.yaml）
@@ -57,7 +57,7 @@ start_server() {
     --host 0.0.0.0 \
     --port "$PORT" \
     --model "$MODEL_DIR" \
-    --served-model-name Qwen3-4B \
+    --served-model-name Qwen3.5-9B \
     >> "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
   echo "     PID: $(cat "$PID_FILE")，日志: $LOG_FILE"

@@ -70,6 +70,7 @@ clear_downloaded_pdfs() {
 
 # 成功退出前：关闭 LLM 服务及本次启动的 env_prepare，释放 GPU
 stop_llm_and_env_prepare() {
+  # 1) 按 PID 文件杀 vLLM 进程
   if [[ -f "$PID_FILE" ]]; then
     local pid
     pid=$(cat "$PID_FILE" 2>/dev/null)
@@ -81,6 +82,28 @@ stop_llm_and_env_prepare() {
     fi
     rm -f "$PID_FILE"
   fi
+
+  # 2) 若端口仍被占用，按端口杀进程（避免 PID 文件缺失或 vLLM 非本脚本启动时未释放 GPU）
+  local port_pids
+  port_pids=$(lsof -ti ":$PORT" 2>/dev/null || true)
+  if [[ -n "$port_pids" ]]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 发现端口 $PORT 仍被占用 (PID: $port_pids)，结束进程以释放 GPU"
+    for p in $port_pids; do
+      kill "$p" 2>/dev/null || true
+    done
+    sleep 2
+    for p in $port_pids; do
+      kill -9 "$p" 2>/dev/null || true
+    done
+  elif command -v fuser &>/dev/null; then
+    if fuser "$PORT/tcp" &>/dev/null; then
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] 发现端口 $PORT 被占用，使用 fuser 结束进程以释放 GPU"
+      fuser -k "$PORT/tcp" 2>/dev/null || true
+      sleep 2
+    fi
+  fi
+
+  # 3) 结束本次由 run.sh 启动的 env_prepare.sh
   if [[ -f "$ENV_PREPARE_PID_FILE" ]]; then
     local ep_pid
     ep_pid=$(cat "$ENV_PREPARE_PID_FILE" 2>/dev/null)

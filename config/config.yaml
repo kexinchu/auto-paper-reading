@@ -43,7 +43,7 @@ semantic_scholar:
 model:
   base_url: "http://127.0.0.1:8000/v1"
   api_key: "dummy"
-  model_name: "Qwen3-4B"  # 与 vLLM /v1/models 返回的 id 一致
+  model_name: "Qwen3.5-9B"  # 与 vLLM /v1/models 返回的 id 一致
   temperature: 0
   timeout_s: 120
 
