@@ -6,6 +6,7 @@ lxml==4.9.3
 # 配置和数据处理
 PyYAML==6.0.1
 python-dotenv==1.0.0
+setuptools<82  # modelscope 依赖 pkg_resources，setuptools>=82 已移除
 
 # 调度和时间处理
 schedule==1.2.0

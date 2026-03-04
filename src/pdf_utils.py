@@ -1,11 +1,12 @@
 """
 PDF download and text extraction using PyMuPDF (fitz). Optional OCR off by default.
+Includes smart section extraction to prioritize paper body over references.
 """
 
 import logging
+import re
 import time
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 
 import requests
@@ -54,6 +55,61 @@ def download_pdf(
     raise last_err or RuntimeError("PDF download failed")
 
 
+# Regex patterns for section headers to strip (references, acknowledgements, appendix)
+_STRIP_SECTION_PATTERNS = re.compile(
+    r'\n\s*(?:\d+\.?\s+)?(?:References|Bibliography|Acknowledgements?|Acknowledgments?)\s*\n',
+    re.IGNORECASE,
+)
+
+
+def extract_key_sections(text: str, max_chars: int = 120000) -> str:
+    """
+    Smart text extraction: remove References/Bibliography sections (usually at the end)
+    to avoid wasting tokens on citations. Then truncate if still too long,
+    keeping beginning (Abstract+Intro+Methods) and end (Conclusion).
+    """
+    if len(text) <= max_chars:
+        return text
+
+    # Step 1: Try to strip References and later sections
+    match = _STRIP_SECTION_PATTERNS.search(text)
+    if match:
+        stripped = text[:match.start()].strip()
+        logger.debug(
+            "Stripped references section: %d -> %d chars", len(text), len(stripped)
+        )
+        text = stripped
+
+    if len(text) <= max_chars:
+        return text
+
+    # Step 2: Still too long — keep head (70%) + tail (20%), cut middle
+    # Head usually contains: Abstract, Introduction, Methodology, Experiments
+    # Tail usually contains: Conclusion, Discussion
+    head_chars = int(max_chars * 0.75)
+    tail_chars = max_chars - head_chars
+
+    # Try to find a Conclusion section near the end to anchor the tail
+    conclusion_pattern = re.compile(
+        r'\n\s*(?:\d+\.?\s+)?(?:Conclusion|Conclusions|Discussion|Summary)\s*\n',
+        re.IGNORECASE,
+    )
+    # Search only in the last 30% of the text to avoid false positives
+    search_start = max(head_chars, len(text) - len(text) // 3)
+    tail_match = conclusion_pattern.search(text, search_start)
+    if tail_match:
+        tail_text = text[tail_match.start():][:tail_chars]
+    else:
+        tail_text = text[-tail_chars:]
+
+    truncated = text[:head_chars] + "\n\n[...中间内容已省略...]\n\n" + tail_text
+    logger.debug(
+        "Smart truncation: %d -> %d chars (head=%d, tail=%d)",
+        len(text), len(truncated), head_chars, len(tail_text),
+    )
+    return truncated
+
+
 def extract_text_fitz(pdf_path: str | Path, use_ocr: bool = False) -> str:
     """
     Extract text from PDF using PyMuPDF. Returns concatenated page text.
@@ -96,8 +152,11 @@ def extract_text_fitz(pdf_path: str | Path, use_ocr: bool = False) -> str:
 def extract_text(
     pdf_path: str | Path,
     use_ocr: bool = False,
+    max_chars: int = 120000,
 ) -> str:
     """
-    Best-effort text extraction. Uses PyMuPDF only. OCR is optional and off by default.
+    Best-effort text extraction with smart section filtering.
+    Removes references section and applies smart truncation to max_chars.
     """
-    return extract_text_fitz(pdf_path, use_ocr=use_ocr)
+    raw = extract_text_fitz(pdf_path, use_ocr=use_ocr)
+    return extract_key_sections(raw, max_chars=max_chars)

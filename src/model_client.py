@@ -62,8 +62,45 @@ def _normalize_json_raw(raw: str) -> str:
     return s
 
 
-# 后台程序重启 LLM 的间隔（秒），失败后等待此时长再尝试一次
-WAIT_AFTER_FAILURE_SEC = 600
+def _extract_json_array(s: str) -> str:
+    """Find first [ and matching ] to extract a JSON array."""
+    start = s.find("[")
+    if start == -1:
+        raise ValueError("No '[' found in model output")
+    depth = 0
+    for i in range(start, len(s)):
+        if s[i] == "[":
+            depth += 1
+        elif s[i] == "]":
+            depth -= 1
+            if depth == 0:
+                return s[start : i + 1]
+    raise ValueError("No matching ']' for JSON array")
+
+
+def _normalize_json_raw_array(raw: str) -> str:
+    """Strip think tags, markdown fences, then extract a JSON array."""
+    if not raw or not raw.strip():
+        raise ValueError("Model returned empty content")
+    s = raw.strip()
+    s = _strip_think_tags(s)
+    s = s.strip()
+    if not s:
+        raise ValueError("Model returned only think/reasoning")
+    if s.startswith("```"):
+        lines = s.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        s = "\n".join(lines).strip()
+    if not s.startswith("["):
+        s = _extract_json_array(s)
+    return s
+
+
+# 后台程序重启 LLM 的等待时间（秒），在所有重试耗尽后等待一次
+SERVER_RESTART_WAIT_S = 600
 
 
 def chat_completion(
@@ -75,10 +112,16 @@ def chat_completion(
     timeout_s: int = 120,
     max_retries: int = 3,
     base_delay: float = 2.0,
+    server_restart_wait_s: int = SERVER_RESTART_WAIT_S,
 ) -> str:
     """
     Call /chat/completions. Returns content string. Raises on final failure.
-    After retries exhausted, waits WAIT_AFTER_FAILURE_SEC (10 min) for LLM restart then tries once more.
+
+    Retry strategy:
+    - Up to max_retries attempts with exponential backoff (base_delay * 2^attempt).
+    - After all retries fail, waits server_restart_wait_s for LLM server to restart,
+      then makes one final attempt.
+    - Set server_restart_wait_s=0 to skip the long wait (e.g. for parallel Stage 1).
     """
     last_err = None
     for attempt in range(max_retries):
@@ -95,12 +138,40 @@ def chat_completion(
             raise ValueError("Empty completion")
         except Exception as e:
             last_err = e
-            logger.warning(
-                "Model API call failed (attempt %s/%s): %s; retry in %.1fs",
-                attempt + 1, max_retries, e, WAIT_AFTER_FAILURE_SEC,
-            )
             if attempt < max_retries - 1:
-                time.sleep(WAIT_AFTER_FAILURE_SEC)
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    "Model API call failed (attempt %d/%d): %s; retry in %.1fs",
+                    attempt + 1, max_retries, e, delay,
+                )
+                time.sleep(delay)
+            else:
+                logger.warning(
+                    "Model API call failed (attempt %d/%d): %s",
+                    attempt + 1, max_retries, e,
+                )
+
+    # All retries exhausted — optionally wait for server restart then try once more
+    if server_restart_wait_s > 0:
+        logger.warning(
+            "All %d retries exhausted; waiting %ds for potential LLM server restart",
+            max_retries, server_restart_wait_s,
+        )
+        time.sleep(server_restart_wait_s)
+        try:
+            r = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout_s,
+            )
+            if r.choices and len(r.choices) > 0:
+                return (r.choices[0].message.content or "").strip()
+        except Exception as e:
+            last_err = e
+            logger.warning("Final attempt after server restart wait also failed: %s", e)
+
     raise last_err or RuntimeError("Model call failed")
 
 
@@ -191,6 +262,109 @@ def parse_stage2_json(raw: str, paper_id: str) -> dict[str, Any]:
     return data
 
 
+def build_stage1_batch_prompt(
+    topics_config: list[dict],
+    papers: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Build a single prompt that classifies a batch of papers in one LLM call.
+    More efficient than calling build_stage1_prompt N times.
+    """
+    topics_desc = "\n".join(
+        f"- id: {t['id']}, name: {t['name']}, description: {t['description']}"
+        for t in topics_config
+    )
+    papers_blob = "\n\n".join(
+        f"Paper {i + 1} (id: \"{p['arxiv_id']}\"):\n"
+        f"Title: {p.get('title', '')}\n"
+        f"Categories: {', '.join(p.get('categories', []))}\n"
+        f"Abstract: {p.get('abstract', '')}"
+        for i, p in enumerate(papers)
+    )
+    n = len(papers)
+    system = (
+        "You are a batch classifier. For each paper in the list, assign each topic a relevance "
+        "score in [0, 1] with a short reason (<=25 words). "
+        "Output ONLY a single valid JSON array, one object per paper, in input order. "
+        "No <think>, no reasoning text, no markdown. Start your response with [."
+    )
+    user = (
+        f"Topics:\n{topics_desc}\n\n"
+        f"Papers to classify ({n} total):\n{papers_blob}\n\n"
+        f"Output a JSON array with exactly {n} objects in the same order as above:\n"
+        "[{\"paper_id\": \"<id>\", \"topics\": [{\"topic_id\": \"...\", "
+        "\"relevance\": 0.0-1.0, \"reason\": \"...\"}, ...], "
+        "\"overall_relevance\": 0.0-1.0, \"decision\": \"keep\" or \"drop\"}, ...]"
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def parse_stage1_batch_json(
+    raw: str,
+    papers: list[dict[str, Any]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Parse batch Stage-1 JSON array. Returns list of (arxiv_id, stage1_dict).
+
+    Matches results to input papers by paper_id field first, then by position.
+    Raises ValueError if JSON is unparseable (caller should fall back to individual calls).
+    """
+    s = _normalize_json_raw_array(raw)
+    data = json.loads(s)
+    if not isinstance(data, list):
+        raise ValueError(f"Expected JSON array, got {type(data).__name__}")
+
+    id_to_paper = {p["arxiv_id"]: p for p in papers}
+    matched: dict[str, dict] = {}
+
+    # Pass 1: match by paper_id field
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        pid = str(item.get("paper_id", ""))
+        if pid in id_to_paper and pid not in matched:
+            item["paper_id"] = pid
+            _clamp_stage1_item(item)
+            matched[pid] = item
+
+    # Pass 2: positional fallback for unmatched papers
+    unmatched = [p for p in papers if p["arxiv_id"] not in matched]
+    if unmatched:
+        pos_items = [item for item in data if isinstance(item, dict)]
+        for paper, item in zip(unmatched, pos_items[len(matched):]):
+            pid = paper["arxiv_id"]
+            item["paper_id"] = pid
+            _clamp_stage1_item(item)
+            matched[pid] = item
+
+    if len(matched) < len(papers):
+        logger.warning(
+            "Batch Stage1 matched %d/%d papers after positional fallback",
+            len(matched), len(papers),
+        )
+
+    # Return in original input order
+    return [(p["arxiv_id"], matched[p["arxiv_id"]]) for p in papers if p["arxiv_id"] in matched]
+
+
+def _clamp_stage1_item(item: dict[str, Any]) -> None:
+    """In-place: clamp relevance scores and normalise decision field."""
+    for t in item.get("topics", []):
+        if isinstance(t, dict) and "relevance" in t:
+            try:
+                t["relevance"] = max(0.0, min(1.0, float(t["relevance"])))
+            except (TypeError, ValueError):
+                t["relevance"] = 0.0
+    if "overall_relevance" in item and item["overall_relevance"] is not None:
+        try:
+            item["overall_relevance"] = max(0.0, min(1.0, float(item["overall_relevance"])))
+        except (TypeError, ValueError):
+            item["overall_relevance"] = 0.0
+    if item.get("decision") not in ("keep", "drop"):
+        item["decision"] = "drop"
+
+
 def build_stage1_prompt(topics_config: list[dict], paper: dict[str, Any]) -> list[dict[str, str]]:
     """Build messages for Stage-1 classification + relevance."""
     topics_desc = "\n".join(
@@ -224,11 +398,11 @@ def build_stage2_prompt(
     paper_metadata: dict[str, Any],
     full_text: str,
     stage1_topics: list[dict],
-    max_chars: int = 120000,
 ) -> list[dict[str, str]]:
-    """Build messages for Stage-2 structured summary. Truncate full_text if needed."""
-    if len(full_text) > max_chars:
-        full_text = full_text[:max_chars] + "\n\n[TRUNCATED]"
+    """Build messages for Stage-2 structured summary.
+    Truncation is handled upstream by pdf_utils.extract_key_sections(); no further
+    truncation is done here so the smart section-aware cut is preserved.
+    """
     meta = (
         f"Title: {paper_metadata.get('title', '')}\n"
         f"Categories: {paper_metadata.get('categories', [])}\n"

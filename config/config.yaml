@@ -43,12 +43,17 @@ semantic_scholar:
 model:
   base_url: "http://127.0.0.1:8000/v1"
   api_key: "dummy"
-  model_name: "Qwen3.5-9B"  # 与 vLLM /v1/models 返回的 id 一致
+  model_name: "Qwen3.5-35B-A3B-GPTQ-Int4"  # Stage 2 摘要用大模型
+  # stage1_model_name: "Qwen3.5-9B"         # 可选：Stage 1 分类用小模型（未设置则与 model_name 相同）
+  stage1_workers: 1    # Stage 1 并行线程数（单 GPU 推荐 1，多 GPU 可调大）
+  stage1_batch_size: 5  # 每批并发送入 Stage 1 的论文数（减少 LLM API 调用次数）
   temperature: 0
   timeout_s: 120
 
 thresholds:
   relevance: 0.6
+  abstract_only_relevance: 0.92  # 相关度 >= 此值且摘要足够长时跳过 PDF 下载
+  abstract_min_length: 500       # 触发摘要直通的最小摘要字符数
 
 storage:
   db_path: "./data/arxiv.db"

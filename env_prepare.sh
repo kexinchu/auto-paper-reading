@@ -5,9 +5,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# 可配置项（也可通过环境变量覆盖）
+# 可配置项（也可通过环境变量覆盖）；改模型时只改此处
 PORT="${MODEL_SERVER_PORT:-8000}"
-MODEL_DIR="${MODEL_DIR:-$SCRIPT_DIR/Models/Qwen3.5-9B}"
+MODEL_NAME="${MODEL_NAME:-Qwen3.5-35B-A3B-GPTQ-Int4}"
+MODEL_DIR="${MODEL_DIR:-$SCRIPT_DIR/Models/$MODEL_NAME}"
 CHECK_INTERVAL_MINUTES="${CHECK_INTERVAL_MINUTES:-10}"
 PID_FILE="$SCRIPT_DIR/logs/model_server.pid"
 LOG_FILE="$SCRIPT_DIR/logs/model_server.log"
@@ -28,24 +29,24 @@ else
 fi
 
 # Qwen3.5 需新版 transformers（识别 qwen3_5）与 vLLM 主分支（支持 Qwen3_5 架构）
-echo "==> 升级 transformers（支持 Qwen3.5 架构）..."
-pip install --upgrade "git+https://github.com/huggingface/transformers.git"
+# echo "==> 升级 transformers（支持 Qwen3.5 架构）..."
+# pip install --upgrade "git+https://github.com/huggingface/transformers.git"
 
-echo "==> 安装 vLLM（从 GitHub 主分支，以支持 Qwen3.5；耗时可能较长）..."
-pip install --no-cache-dir "vllm@git+https://github.com/vllm-project/vllm.git"
+# echo "==> 安装 vLLM（从 GitHub 主分支，以支持 Qwen3.5；耗时可能较长）..."
+# pip install --no-cache-dir "vllm@git+https://github.com/vllm-project/vllm.git"
 
-# vLLM 安装可能覆盖 transformers，再次确保使用最新
-pip install --upgrade "git+https://github.com/huggingface/transformers.git"
+# # vLLM 安装可能覆盖 transformers，再次确保使用最新
+# pip install --upgrade "git+https://github.com/huggingface/transformers.git"
 
 
-MODEL_LOCAL_DIR="$SCRIPT_DIR/Models/Qwen3.5-9B"
+MODEL_LOCAL_DIR="$SCRIPT_DIR/Models/$MODEL_NAME"
 if [[ -d "$MODEL_LOCAL_DIR" ]] && [[ -n "$(ls -A "$MODEL_LOCAL_DIR" 2>/dev/null)" ]]; then
   echo "==> 模型目录已存在，跳过下载: $MODEL_LOCAL_DIR"
 else
   pip install modelscope
-  echo "==> 从 ModelScope 下载模型到 ./Models/Qwen3.5-9B ..."
+  echo "==> 从 ModelScope 下载模型到 ./Models/$MODEL_NAME (GPTQ Int4) ..."
   mkdir -p "$SCRIPT_DIR/Models"
-  modelscope download --model Qwen/Qwen3.5-9B --local_dir "$MODEL_LOCAL_DIR"
+  modelscope download --model "Qwen/$MODEL_NAME" --local_dir "$MODEL_LOCAL_DIR"
 fi
 
 # 检测并初始化 SQLite 与存储目录（依赖 config.yaml）
@@ -69,7 +70,7 @@ start_server() {
     --host 0.0.0.0 \
     --port "$PORT" \
     --model "$MODEL_DIR" \
-    --served-model-name Qwen3.5-9B \
+    --served-model-name "$MODEL_NAME" \
     --gpu-memory-utilization 0.85 \
     >> "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"

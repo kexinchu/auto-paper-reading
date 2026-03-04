@@ -32,6 +32,25 @@ def _is_rate_limit(err: Exception) -> bool:
     return False
 
 
+def _effective_days_back(days_back: int) -> int:
+    """
+    Compensate for weekends and holidays: arXiv does not publish on Sat/Sun, so running
+    the pipeline on Monday (or after a long holiday) with days_back=1 would fetch nothing.
+    Automatically extend days_back to cover at least one business day.
+
+    Rules:
+      - Monday → extend to 3 (covers Fri, Sat, Sun)
+      - After a gap of N days with no papers, the caller can increase days_back manually.
+    The minimum returned value is always `days_back` so the original setting is respected.
+    """
+    today = datetime.now(timezone.utc).weekday()  # 0=Mon, 6=Sun
+    if today == 0:  # Monday: extend to cover Friday's submissions
+        return max(days_back, 3)
+    if today == 6:  # Sunday: extend to cover Friday
+        return max(days_back, 2)
+    return days_back
+
+
 def fetch_papers(
     categories: list[str],
     max_results_per_category: int,
@@ -44,8 +63,11 @@ def fetch_papers(
     Fetch papers from arXiv for each category, filtered by published date within days_back.
     Returns list of dicts: arxiv_id, title, authors, categories, published, updated, abstract, pdf_url.
     Uses longer backoff on HTTP 429 (rate limit) and a delay between categories to avoid throttling.
+    Automatically extends days_back on Mondays to compensate for the weekend gap.
     """
+    days_back = _effective_days_back(days_back)
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+    logger.info("Fetching arXiv papers (days_back=%d, cutoff=%s)", days_back, cutoff.date())
     seen_ids: set[str] = set()
     all_papers: list[dict[str, Any]] = []
 
