@@ -23,8 +23,19 @@ if [[ ! -d "$SCRIPT_DIR/venv" ]]; then
   pip install -r requirements.txt
 else
   echo "==> 虚拟环境已存在，跳过创建"
+  # shellcheck source=/dev/null
   source "$SCRIPT_DIR/venv/bin/activate"
 fi
+
+# Qwen3.5 需新版 transformers（识别 qwen3_5）与 vLLM 主分支（支持 Qwen3_5 架构）
+echo "==> 升级 transformers（支持 Qwen3.5 架构）..."
+pip install --upgrade "git+https://github.com/huggingface/transformers.git"
+
+echo "==> 安装 vLLM（从 GitHub 主分支，以支持 Qwen3.5；耗时可能较长）..."
+pip install --no-cache-dir "vllm@git+https://github.com/vllm-project/vllm.git"
+
+# vLLM 安装可能覆盖 transformers，再次确保使用最新
+pip install --upgrade "git+https://github.com/huggingface/transformers.git"
 
 
 MODEL_LOCAL_DIR="$SCRIPT_DIR/Models/Qwen3.5-9B"
@@ -53,11 +64,13 @@ start_server() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] 启动模型推理服务: $MODEL_DIR, 端口 $PORT"
   # 后台启动 vLLM OpenAI 兼容服务；日志追加到文件
   # --served-model-name 使 /v1/models 返回的 id 与 config 中 model_name 一致
+  # 显存不足时可调低 --gpu-memory-utilization（默认 0.9）
   nohup python -u -m vllm.entrypoints.openai.api_server \
     --host 0.0.0.0 \
     --port "$PORT" \
     --model "$MODEL_DIR" \
     --served-model-name Qwen3.5-9B \
+    --gpu-memory-utilization 0.85 \
     >> "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
   echo "     PID: $(cat "$PID_FILE")，日志: $LOG_FILE"

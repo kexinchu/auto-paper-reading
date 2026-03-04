@@ -32,5 +32,6 @@ openai==1.109.1
 modelscope
 
 # 本地模型推理服务（vLLM，提供 OpenAI 兼容 API）
-# 需 GPU 与较新驱动，建议在独立环境中安装
-vllm
+# Qwen3.5 需 vLLM nightly，由 env_prepare.sh 用 uv 安装：
+#   uv pip install vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
+# 不在此处写 vllm，避免 pip install -r requirements.txt 装旧版
