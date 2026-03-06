@@ -41,6 +41,19 @@ def test_parse_stage1_json_with_think_tag():
     assert out["topics"][0]["topic_id"] == "llm-opt"
 
 
+def test_parse_stage1_json_with_thinking_process_prefix():
+    """Model returns 'Thinking Process:...' then JSON; we strip and parse."""
+    raw = (
+        "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Input: A paper title...\n    *   Output Format: Single valid JSON.\n\n"
+        '{"paper_id": "2603.04390v1", "topics": [{"topic_id": "llm-opt", "relevance": 0.75, "reason": "LLM"}], '
+        '"overall_relevance": 0.75, "decision": "drop"}'
+    )
+    out = model_client.parse_stage1_json(raw, "2603.04390v1")
+    assert out["paper_id"] == "2603.04390v1"
+    assert out["decision"] == "drop"
+    assert out["topics"][0]["relevance"] == 0.75
+
+
 def test_parse_stage2_json():
     raw = '''{"paper_id":"2401.2","title":"T","categories":["cs.LG"],"problem":"P","motivation":"M","key_challenges":["C1"],"approach":"A","assumptions_limitations":[],"evidence_results":["E1"],"takeaways":["t1","t2","t3"]}'''
     out = model_client.parse_stage2_json(raw, "2401.2")

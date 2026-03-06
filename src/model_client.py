@@ -25,6 +25,22 @@ def _strip_think_tags(s: str) -> str:
     return s
 
 
+def _strip_leading_reasoning(s: str) -> str:
+    """Drop leading reasoning text (e.g. 'Thinking Process:...') before first { or [."""
+    s = s.strip()
+    for prefix in ("Thinking Process:", "Thinking:", "Analysis:", "Reasoning:", "Process:"):
+        if s.lower().startswith(prefix.lower()):
+            s = s[len(prefix) :].lstrip()
+            break
+    idx_brace = s.find("{")
+    idx_bracket = s.find("[")
+    if idx_brace == -1 and idx_bracket == -1:
+        return s
+    if idx_brace >= 0 and (idx_bracket == -1 or idx_brace <= idx_bracket):
+        return s[idx_brace:].strip()
+    return s[idx_bracket:].strip()
+
+
 def _extract_json_object(s: str) -> str:
     """Find first { and matching } to extract a single JSON object."""
     start = s.find("{")
@@ -42,11 +58,12 @@ def _extract_json_object(s: str) -> str:
 
 
 def _normalize_json_raw(raw: str) -> str:
-    """Strip think tags, markdown fences, then extract JSON for json.loads."""
+    """Strip think tags, leading reasoning text, markdown fences, then extract JSON for json.loads."""
     if not raw or not raw.strip():
         raise ValueError("Model returned empty or whitespace-only content")
     s = raw.strip()
     s = _strip_think_tags(s)
+    s = _strip_leading_reasoning(s)
     s = s.strip()
     if not s:
         raise ValueError("Model returned only think/reasoning, no JSON")
@@ -79,11 +96,12 @@ def _extract_json_array(s: str) -> str:
 
 
 def _normalize_json_raw_array(raw: str) -> str:
-    """Strip think tags, markdown fences, then extract a JSON array."""
+    """Strip think tags, leading reasoning text, markdown fences, then extract a JSON array."""
     if not raw or not raw.strip():
         raise ValueError("Model returned empty content")
     s = raw.strip()
     s = _strip_think_tags(s)
+    s = _strip_leading_reasoning(s)
     s = s.strip()
     if not s:
         raise ValueError("Model returned only think/reasoning")
@@ -193,7 +211,10 @@ def parse_stage1_json(raw: str, paper_id: str) -> dict[str, Any]:
 
     if not isinstance(data, dict):
         raise ValueError("Expected a JSON object")
-    if data.get("paper_id") != paper_id:
+    # Normalise paper_id (model may return number or string)
+    raw_pid = data.get("paper_id")
+    data["paper_id"] = str(raw_pid) if raw_pid is not None else paper_id
+    if data["paper_id"] != paper_id:
         data["paper_id"] = paper_id
 
     topics = data.get("topics")

@@ -1,6 +1,6 @@
 """Tests for email formatting."""
 
-from arxiv_digest import emailer
+from src import emailer
 
 
 def test_format_email_body():

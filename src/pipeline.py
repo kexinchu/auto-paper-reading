@@ -41,6 +41,38 @@ def _normalize_title(title: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def _log_stage1_scores(
+    db_path: Path,
+    stage1_results: dict[str, dict[str, Any]],
+    threshold: float,
+) -> None:
+    """Append Stage1 scores to logs/stage1_scores.log (JSONL) for threshold tuning."""
+    if not stage1_results:
+        return
+    try:
+        logs_dir = db_path.resolve().parent.parent / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_file = logs_dir / "stage1_scores.log"
+        with open(log_file, "a", encoding="utf-8") as f:
+            for arxiv_id, stage1 in stage1_results.items():
+                topics = stage1.get("topics") or []
+                max_rel = max((t.get("relevance", 0) for t in topics), default=0)
+                rec = {
+                    "paper_id": arxiv_id,
+                    "max_relevance": round(max_rel, 4),
+                    "decision": stage1.get("decision", "drop"),
+                    "above_threshold": max_rel >= threshold,
+                    "topics": [
+                        {"topic_id": t.get("topic_id"), "relevance": round(t.get("relevance", 0), 4)}
+                        for t in topics
+                    ],
+                }
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        logger.info("Stage1 scores written to %s (%d papers)", log_file, len(stage1_results))
+    except OSError as e:
+        logger.warning("Could not write stage1_scores.log: %s", e)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Keyword pre-filter
 # ──────────────────────────────────────────────────────────────────────────────
@@ -201,6 +233,7 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
             ss_papers = semantic_scholar_client.fetch_papers(
                 queries=ss_cfg["queries"],
                 limit=ss_cfg.get("limit", 10),
+                top_k_by_relevance=ss_cfg.get("top_k_by_relevance"),
                 delay_between_queries=ss_cfg.get("delay_between_queries", 8.0),
                 max_retries_429=ss_cfg.get("max_retries_429", 3),
             )
@@ -416,6 +449,9 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
         "Stage 1 complete: %d classified, %d failed",
         len(stage1_results), stats["stage1_failed"],
     )
+
+    # Record Stage1 scores for threshold tuning (e.g. after model change)
+    _log_stage1_scores(db_path, stage1_results, threshold)
 
     # ── Phase 3: Stage-2 for relevant papers ─────────────────────────────────
     digest_summaries: list[dict[str, Any]] = []

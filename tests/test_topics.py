@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from arxiv_digest.topics import load_topics
+from src.topics import load_topics
 
 
 def test_load_topics_minimal():

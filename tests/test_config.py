@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from arxiv_digest.config import load_config, validate_config, ENV_MODEL_API_KEY
+from src.config import load_config, validate_config, ENV_MODEL_API_KEY
 
 
 def test_validate_config_minimal():

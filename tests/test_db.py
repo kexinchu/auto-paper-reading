@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from arxiv_digest import db
+from src import db
 
 
 @pytest.fixture
@@ -50,5 +50,9 @@ def test_is_processed(db_path):
 def test_is_in_progress_or_processed(db_path):
     db.ensure_db(db_path)
     assert db.is_in_progress_or_processed(db_path, "x") is False
+    # STAGE1_OK is resumable (not skipped), so we do not skip
     db.upsert_paper_metadata(db_path, "x", "T", "c", db.STAGE1_OK)
+    assert db.is_in_progress_or_processed(db_path, "x") is False
+    # EMAILED is processed, so we skip
+    db.mark_status(db_path, "x", db.EMAILED)
     assert db.is_in_progress_or_processed(db_path, "x") is True
