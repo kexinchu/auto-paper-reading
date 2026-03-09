@@ -46,7 +46,7 @@ model:
   model_name: "Qwen3.5-35B-A3B-GPTQ-Int4"  # Stage 2 摘要用大模型
   # stage1_model_name: "Qwen3.5-9B"         # 可选：Stage 1 分类用小模型（未设置则与 model_name 相同）
   stage1_workers: 1    # Stage 1 并行线程数（单 GPU 推荐 1，多 GPU 可调大）
-  stage1_batch_size: 5  # 每批并发送入 Stage 1 的论文数（减少 LLM API 调用次数）
+  stage1_batch_size: 1  # 1=每次只请求 1 篇（减轻 GPU 压力）；>1 时多篇合并一次请求
   temperature: 0
   timeout_s: 120
 
@@ -69,3 +69,4 @@ email:
   from_addr: "*@163.com"
   to_addr: "*@gmail.com"
   use_tls: true
+  max_papers_per_digest: 10   # 每封最多篇数，超出则分多封发送

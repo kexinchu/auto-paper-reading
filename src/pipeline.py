@@ -41,6 +41,28 @@ def _normalize_title(title: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def _save_failure_raw(
+    db_path: Path, stage: str, arxiv_id: str, raw: str, error_msg: str, attempt: int
+) -> Path:
+    """Persist raw LLM output on parse failure for debugging. Returns path to .raw file."""
+    try:
+        logs_dir = db_path.resolve().parent.parent / "logs" / f"{stage}_failures"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        safe_id = re.sub(r"[^\w\-.]", "_", arxiv_id)
+        raw_path = logs_dir / f"{safe_id}.raw.txt"
+        meta_path = logs_dir / f"{safe_id}.meta.txt"
+        raw_path.write_text(raw or "(empty)", encoding="utf-8")
+        meta_path.write_text(
+            f"paper_id={arxiv_id}\nerror={error_msg}\nattempt={attempt}\n",
+            encoding="utf-8",
+        )
+        logger.info("Saved failure raw for %s to %s (attempt %d)", arxiv_id, raw_path, attempt)
+        return raw_path
+    except OSError as e:
+        logger.warning("Could not save failure raw: %s", e)
+        return Path()
+
+
 def _log_stage1_scores(
     db_path: Path,
     stage1_results: dict[str, dict[str, Any]],
@@ -201,9 +223,15 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
     stage1_model_name = model_cfg.get("stage1_model_name") or model_name
     stage1_workers = int(model_cfg.get("stage1_workers", 1))
     # Batch multiple papers into one Stage-1 LLM call (reduces API call count)
-    stage1_batch_size = int(model_cfg.get("stage1_batch_size", 5))
+    stage1_batch_size = int(model_cfg.get("stage1_batch_size", 1))
     temperature = model_cfg.get("temperature", 0)
     timeout_s = model_cfg.get("timeout_s", 120)
+    # vLLM 在启用 --reasoning-parser 时会把 thinking 放在 message.reasoning、最终答案放在 message.content；我们只用 content 解析
+    # 仅当显式关闭 thinking 时才传 extra_body（默认不传，保留推理）
+    enable_thinking = model_cfg.get("enable_thinking", True)
+    llm_extra_body = None if enable_thinking else {"chat_template_kwargs": {"enable_thinking": False}}
+    stage1_max_tokens = int(model_cfg.get("stage1_max_tokens", 8192))
+    stage2_max_tokens = int(model_cfg.get("stage2_max_tokens", 8192))
 
     threshold_cfg = config["thresholds"]
     threshold = threshold_cfg["relevance"]
@@ -224,6 +252,10 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
     ))
     seen_ids: set[str] = {p["arxiv_id"] for p in papers}
     seen_titles: set[str] = {_normalize_title(p["title"]) for p in papers}
+    # Seed seen_titles with already-processed papers from DB to avoid cross-day, cross-source dups
+    # (e.g. paper emailed yesterday via arXiv ID, returns today via Semantic Scholar with a different ID)
+    for t in db.get_processed_titles(db_path):
+        seen_titles.add(_normalize_title(t))
 
     # Semantic Scholar API (no browser, no captcha)
     ss_cfg = config.get("semantic_scholar") or {}
@@ -236,6 +268,8 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
                 top_k_by_relevance=ss_cfg.get("top_k_by_relevance"),
                 delay_between_queries=ss_cfg.get("delay_between_queries", 8.0),
                 max_retries_429=ss_cfg.get("max_retries_429", 3),
+                api_key=ss_cfg.get("api_key"),
+                user_agent=ss_cfg.get("user_agent"),
             )
             added = 0
             for p in ss_papers:
@@ -301,7 +335,7 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
     stage1_results: dict[str, dict] = {}
 
     def _run_stage1_single(paper: dict[str, Any]) -> tuple[str, dict | None]:
-        """Classify a single paper; checkpoint-resumes from DB if available."""
+        """Classify a single paper; checkpoint-resumes from DB. Retries up to 3 times on parse failure."""
         arxiv_id = paper["arxiv_id"]
         try:
             existing = db.get_paper(db_path, arxiv_id)
@@ -313,29 +347,56 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
                 return arxiv_id, stage1
 
             messages = model_client.build_stage1_prompt(topics_list, paper)
-            raw = model_client.chat_completion(
-                client, stage1_model_name, messages,
-                temperature=temperature, max_tokens=2048, timeout_s=timeout_s,
-                server_restart_wait_s=stage1_restart_wait,
-            )
-            try:
-                stage1 = model_client.parse_stage1_json(raw, arxiv_id)
-            except ValueError:
-                repair = [{"role": "user", "content":
-                           "Return only valid JSON, no markdown. Previous reply had errors.\n\n"
-                           + raw[:8000]}]
-                raw = model_client.chat_completion(
-                    client, stage1_model_name, repair,
-                    temperature=0, max_tokens=2048, timeout_s=timeout_s,
-                    server_restart_wait_s=stage1_restart_wait,
-                )
-                stage1 = model_client.parse_stage1_json(raw, arxiv_id)
-
-            db.mark_status(db_path, arxiv_id, db.STAGE1_OK,
-                           stage1_json=json.dumps(stage1, ensure_ascii=False))
-            return arxiv_id, stage1
+            last_error: Exception | None = None
+            for attempt in range(3):
+                try:
+                    if attempt == 0:
+                        raw = model_client.chat_completion(
+                            client, stage1_model_name, messages,
+                            temperature=temperature, max_tokens=stage1_max_tokens, timeout_s=timeout_s,
+                            server_restart_wait_s=stage1_restart_wait,
+                            extra_body=llm_extra_body,
+                        )
+                    elif attempt == 1:
+                        # Repair: ask model to fix previous invalid output
+                        repair = [{"role": "user", "content":
+                                   "Return only valid JSON, no markdown, no thinking. Previous reply had errors.\n\n"
+                                   + (raw[:8000] if raw else "")}]
+                        raw = model_client.chat_completion(
+                            client, stage1_model_name, repair,
+                            temperature=0, max_tokens=stage1_max_tokens, timeout_s=timeout_s,
+                            server_restart_wait_s=stage1_restart_wait,
+                            extra_body=llm_extra_body,
+                        )
+                    else:
+                        # Retry from scratch with original prompt
+                        raw = model_client.chat_completion(
+                            client, stage1_model_name, messages,
+                            temperature=0, max_tokens=stage1_max_tokens, timeout_s=timeout_s,
+                            server_restart_wait_s=stage1_restart_wait,
+                            extra_body=llm_extra_body,
+                        )
+                    stage1 = model_client.parse_stage1_json(raw, arxiv_id)
+                    db.mark_status(db_path, arxiv_id, db.STAGE1_OK,
+                                   stage1_json=json.dumps(stage1, ensure_ascii=False))
+                    return arxiv_id, stage1
+                except ValueError as e:
+                    last_error = e
+                    _save_failure_raw(db_path, "stage1", arxiv_id, raw, str(e), attempt + 1)
+                    # Programmatic repair before another LLM call
+                    stage1, _ = model_client.try_parse_stage1_aggressive(raw, arxiv_id)
+                    if stage1 is not None:
+                        logger.info("Stage1 recovered for %s via aggressive parse (attempt %d)", arxiv_id, attempt + 1)
+                        db.mark_status(db_path, arxiv_id, db.STAGE1_OK,
+                                       stage1_json=json.dumps(stage1, ensure_ascii=False))
+                        return arxiv_id, stage1
+                    if attempt < 2:
+                        logger.info("Stage1 parse failed for %s (attempt %d/3), retrying LLM: %s", arxiv_id, attempt + 1, e)
+                    continue
+            assert last_error is not None
+            raise last_error
         except Exception as e:
-            logger.warning("Stage1 failed for %s: %s", arxiv_id, e)
+            logger.warning("Stage1 failed for %s after retries: %s", arxiv_id, e)
             db.mark_status(db_path, arxiv_id, db.FAILED, error_message=str(e))
             return arxiv_id, None
 
@@ -363,16 +424,23 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
         if not need_llm:
             return results
 
+        # 单篇模式（stage1_batch_size <= 1）：不做 batch 请求，逐篇调用以减轻 GPU 压力
+        if stage1_batch_size <= 1:
+            for paper in need_llm:
+                results.append(_run_stage1_single(paper))
+            return results
+
         # Try batch LLM call for papers needing classification
         try:
             messages = model_client.build_stage1_batch_prompt(topics_list, need_llm)
-            # Allow extra tokens proportional to batch size
-            max_tokens = min(512 * len(need_llm), 8192)
+            # Batch: per-paper room, cap to avoid OOM (e.g. 8192 * batch_size capped at 32k)
+            batch_max = min(stage1_max_tokens * len(need_llm), 32768)
             raw = model_client.chat_completion(
                 client, stage1_model_name, messages,
-                temperature=temperature, max_tokens=max_tokens,
+                temperature=temperature, max_tokens=batch_max,
                 timeout_s=timeout_s * 2,  # batches need more time
                 server_restart_wait_s=stage1_restart_wait,
+                extra_body=llm_extra_body,
             )
             batch_results = model_client.parse_stage1_batch_json(raw, need_llm)
             matched_ids = {aid for aid, _ in batch_results}
@@ -411,10 +479,13 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
         new_papers[i : i + stage1_batch_size]
         for i in range(0, len(new_papers), stage1_batch_size)
     ]
-    logger.info(
-        "Stage 1: %d papers in %d batches of %d (workers=%d)",
-        len(new_papers), len(batches), stage1_batch_size, stage1_workers,
-    )
+    if stage1_batch_size <= 1:
+        logger.info("Stage 1: %d papers, single-paper mode (no batching), workers=%d", len(new_papers), stage1_workers)
+    else:
+        logger.info(
+            "Stage 1: %d papers in %d batches of %d (workers=%d)",
+            len(new_papers), len(batches), stage1_batch_size, stage1_workers,
+        )
 
     completed_count = 0
 
@@ -491,34 +562,62 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
                     stats["stage2_failed"] += 1
                     continue
 
-            # Stage 2
+            # Stage 2: up to 3 attempts (original -> repair -> retry from scratch)
             messages_s2 = model_client.build_stage2_prompt(
                 paper, full_text, stage1.get("topics", []),
             )
-            raw_s2 = model_client.chat_completion(
-                client, model_name, messages_s2,
-                temperature=temperature, max_tokens=4096, timeout_s=timeout_s,
-            )
-            try:
-                stage2 = model_client.parse_stage2_json(raw_s2, arxiv_id)
-            except ValueError as e:
-                logger.warning("Stage2 JSON parse failed for %s, retrying: %s", arxiv_id, e)
-                repair_msg = [{"role": "user", "content":
-                               "Return only valid JSON, no markdown. Previous reply had errors.\n\n"
-                               + raw_s2[:12000]}]
-                raw_s2 = model_client.chat_completion(
-                    client, model_name, repair_msg,
-                    temperature=0, max_tokens=4096, timeout_s=timeout_s,
-                )
-                stage2 = model_client.parse_stage2_json(raw_s2, arxiv_id)
-
-            db.mark_status(
-                db_path, arxiv_id, db.STAGE2_OK,
-                stage2_json=json.dumps(stage2, ensure_ascii=False),
-            )
-            digest_summaries.append(stage2)
-            stats["stage2_ok"] += 1
-            logger.info("Stage2 done: %s", arxiv_id)
+            last_s2_error: Exception | None = None
+            raw_s2 = ""
+            for attempt in range(3):
+                try:
+                    if attempt == 0:
+                        raw_s2 = model_client.chat_completion(
+                            client, model_name, messages_s2,
+                            temperature=temperature, max_tokens=stage2_max_tokens, timeout_s=timeout_s,
+                            extra_body=llm_extra_body,
+                        )
+                    elif attempt == 1:
+                        repair_msg = [{"role": "user", "content":
+                                       "Return only valid JSON, no markdown, no thinking. Previous reply had errors.\n\n"
+                                       + raw_s2[:12000]}]
+                        raw_s2 = model_client.chat_completion(
+                            client, model_name, repair_msg,
+                            temperature=0, max_tokens=stage2_max_tokens, timeout_s=timeout_s,
+                            extra_body=llm_extra_body,
+                        )
+                    else:
+                        raw_s2 = model_client.chat_completion(
+                            client, model_name, messages_s2,
+                            temperature=0, max_tokens=stage2_max_tokens, timeout_s=timeout_s,
+                            extra_body=llm_extra_body,
+                        )
+                    stage2 = model_client.parse_stage2_json(raw_s2, arxiv_id)
+                    db.mark_status(
+                        db_path, arxiv_id, db.STAGE2_OK,
+                        stage2_json=json.dumps(stage2, ensure_ascii=False),
+                    )
+                    digest_summaries.append(stage2)
+                    stats["stage2_ok"] += 1
+                    logger.info("Stage2 done: %s", arxiv_id)
+                    break
+                except ValueError as e:
+                    last_s2_error = e
+                    _save_failure_raw(db_path, "stage2", arxiv_id, raw_s2, str(e), attempt + 1)
+                    stage2, _ = model_client.try_parse_stage2_aggressive(raw_s2, arxiv_id)
+                    if stage2 is not None:
+                        logger.info("Stage2 recovered for %s via aggressive parse (attempt %d)", arxiv_id, attempt + 1)
+                        db.mark_status(
+                            db_path, arxiv_id, db.STAGE2_OK,
+                            stage2_json=json.dumps(stage2, ensure_ascii=False),
+                        )
+                        digest_summaries.append(stage2)
+                        stats["stage2_ok"] += 1
+                        logger.info("Stage2 done: %s", arxiv_id)
+                        break
+                    if attempt < 2:
+                        logger.info("Stage2 parse failed for %s (attempt %d/3), retrying LLM: %s", arxiv_id, attempt + 1, e)
+                if attempt == 2:
+                    raise (last_s2_error or RuntimeError("Stage2 parse failed"))
 
         except Exception as e:
             logger.exception("Stage2 error for %s: %s", arxiv_id, e)
@@ -534,35 +633,46 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
             already_ids.add(pid)
             logger.info("Recovered STAGE2_OK paper for digest: %s", pid)
 
-    # ── Phase 5: Single topic-grouped HTML digest email ───────────────────────
+    # ── Phase 5: Topic-grouped HTML digest email(s); at most N papers per email ──
     if digest_summaries:
         email_cfg = config["email"]
+        max_per_email = int(email_cfg.get("max_papers_per_digest", 10))
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        n = len(digest_summaries)
-        subject = f"[arXiv Digest] {date_str} — {n} 篇相关论文"
-        html_body = emailer.format_html_digest(
-            digest_summaries, date_str, stats,
-            topics_config=topics_list,  # enables topic-grouped layout
-        )
-        try:
-            emailer.send_digest_email(
-                smtp_host=email_cfg["smtp_host"],
-                smtp_port=email_cfg["smtp_port"],
-                smtp_user=email_cfg.get("smtp_user", ""),
-                smtp_password=email_cfg.get("smtp_password", ""),
-                from_addr=email_cfg["from_addr"],
-                to_addr=email_cfg["to_addr"],
-                use_tls=email_cfg["use_tls"],
-                subject=subject,
-                body=html_body,
-                is_html=True,
+        total = len(digest_summaries)
+        chunks: list[list[dict[str, Any]]] = [
+            digest_summaries[i : i + max_per_email]
+            for i in range(0, total, max_per_email)
+        ]
+        num_emails = len(chunks)
+        for idx, chunk in enumerate(chunks):
+            n = len(chunk)
+            if num_emails > 1:
+                subject = f"[arXiv Digest] {date_str} — {n} 篇 (第 {idx + 1}/{num_emails} 封)"
+            else:
+                subject = f"[arXiv Digest] {date_str} — {n} 篇相关论文"
+            html_body = emailer.format_html_digest(
+                chunk, date_str, stats,
+                topics_config=topics_list,
             )
-            for summary in digest_summaries:
-                db.mark_status(db_path, summary["paper_id"], db.EMAILED)
-            stats["emailed"] = n
-            logger.info("Digest email sent: %d papers -> %s", n, email_cfg["to_addr"])
-        except Exception as e:
-            logger.exception("Digest email failed: %s", e)
+            try:
+                emailer.send_digest_email(
+                    smtp_host=email_cfg["smtp_host"],
+                    smtp_port=email_cfg["smtp_port"],
+                    smtp_user=email_cfg.get("smtp_user", ""),
+                    smtp_password=email_cfg.get("smtp_password", ""),
+                    from_addr=email_cfg["from_addr"],
+                    to_addr=email_cfg["to_addr"],
+                    use_tls=email_cfg["use_tls"],
+                    subject=subject,
+                    body=html_body,
+                    is_html=True,
+                )
+                for summary in chunk:
+                    db.mark_status(db_path, summary["paper_id"], db.EMAILED)
+                stats["emailed"] += n
+                logger.info("Digest email sent: %d papers (part %d/%d) -> %s", n, idx + 1, num_emails, email_cfg["to_addr"])
+            except Exception as e:
+                logger.exception("Digest email failed (chunk %d/%d): %s", idx + 1, num_emails, e)
     else:
         logger.info("No relevant papers found; no email sent")
 

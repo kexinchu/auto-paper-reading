@@ -34,3 +34,15 @@ bash run.sh
 # 每天 8:00 执行 run.sh，日志写到项目下 logs/run.log
 0 8 * * * cd /path/to/auto-paper-reading && bash run.sh >> /path/to/auto-paper-reading/logs/run.log 2>&1
 ```
+
+### vLLM 推理模型（Qwen3 等）
+
+vLLM 支持**区分 thinking 与最终输出**：响应中 `message.reasoning` 为思考过程，`message.content` 仅为最终答案。本 pipeline 只使用 `content` 做 JSON 解析。
+
+请用 **`--reasoning-parser`** 启动 vLLM，例如 Qwen3：
+
+```bash
+vllm serve Qwen/Qwen3-8B --reasoning-parser qwen3
+```
+
+这样 API 返回的 `content` 仅为最终 JSON，不会被长 thinking 占满 token 导致截断。不在请求里关闭 thinking（`enable_thinking` 默认 true），推理质量保留。

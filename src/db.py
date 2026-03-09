@@ -227,6 +227,15 @@ def get_unemailed_summaries(db_path: str | Path) -> list[dict[str, Any]]:
         return results
 
 
+def get_processed_titles(db_path: str | Path) -> set[str]:
+    """Return titles of all papers not in FAILED status (to detect cross-source duplicates)."""
+    with _conn(db_path) as conn:
+        cur = conn.execute(
+            "SELECT title FROM papers WHERE status != ?", (FAILED,)
+        )
+        return {row["title"] for row in cur.fetchall() if row["title"]}
+
+
 def get_run_stats(db_path: str | Path, since: str | None = None) -> dict[str, int]:
     """Return counts grouped by status. Optionally filter by updated_at >= since."""
     with _conn(db_path) as conn:

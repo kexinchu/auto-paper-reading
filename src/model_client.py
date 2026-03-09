@@ -2,8 +2,10 @@
 OpenAI-compatible API client for chat completions. Retries with exponential backoff.
 """
 
+import ast
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -26,13 +28,23 @@ def _strip_think_tags(s: str) -> str:
 
 
 def _strip_leading_reasoning(s: str) -> str:
-    """Drop leading reasoning text (e.g. 'Thinking Process:...') before first { or [."""
+    """Drop leading reasoning text (e.g. 'Thinking Process:...') before first real JSON start ({ or [).
+    Skip lone { that is part of text like 'Start with `{`' (brace followed by backtick)."""
     s = s.strip()
     for prefix in ("Thinking Process:", "Thinking:", "Analysis:", "Reasoning:", "Process:"):
         if s.lower().startswith(prefix.lower()):
             s = s[len(prefix) :].lstrip()
             break
-    idx_brace = s.find("{")
+    # Find first { that looks like start of JSON: { then optional space then " or '
+    idx_brace = -1
+    for i, c in enumerate(s):
+        if c == "{":
+            rest = s[i + 1 :].lstrip()
+            # Skip { that is inside "Start with `{`" (rest starts with backtick)
+            if rest.startswith("`"):
+                continue
+            idx_brace = i
+            break
     idx_bracket = s.find("[")
     if idx_brace == -1 and idx_bracket == -1:
         return s
@@ -41,11 +53,121 @@ def _strip_leading_reasoning(s: str) -> str:
     return s[idx_bracket:].strip()
 
 
-def _extract_json_object(s: str) -> str:
-    """Find first { and matching } to extract a single JSON object."""
+def _fix_single_quoted_keys(s: str) -> str:
+    """Convert Python-style 'key': to JSON "key": so json.loads accepts it."""
+    return re.sub(r"'([^']*)'\s*:", r'"\1":', s)
+
+
+def _fix_missing_colon_between_quoted(s: str) -> str:
+    """Insert missing colon when model outputs \"key\" \"value\" instead of \"key\": \"value\"."""
+    # Only fix known Stage1 keys so we don't break string values that contain " \" "
+    keys = r"paper_id|topic_id|relevance|reason|decision|overall_relevance|topics"
+    return re.sub(r'"(' + keys + r')"\s+"', r'"\1": "', s)
+
+
+def _replace_backtick_strings(s: str) -> str:
+    """Replace `identifier` with "identifier" so JSON/ast can parse (model often outputs `llm-opt` etc)."""
+    return re.sub(r"`([^`]*)`", r'"\1"', s)
+
+
+def _escape_control_in_double_quoted_strings(s: str) -> str:
+    """Escape raw newline/return/tab inside double-quoted strings so json.loads accepts (model may emit literal newlines in values)."""
+    result: list[str] = []
+    i = 0
+    while i < len(s):
+        if s[i] == '"' and (i == 0 or s[i - 1] != "\\"):
+            result.append(s[i])
+            i += 1
+            while i < len(s):
+                c = s[i]
+                if c == '"' and s[i - 1] != "\\":
+                    result.append(c)
+                    i += 1
+                    break
+                if c == "\\":
+                    result.append(c)
+                    i += 1
+                    if i < len(s):
+                        result.append(s[i])
+                        i += 1
+                    continue
+                if c in "\n\r\t":
+                    result.append("\\n" if c == "\n" else "\\r" if c == "\r" else "\\t")
+                    i += 1
+                    continue
+                result.append(c)
+                i += 1
+            continue
+        result.append(s[i])
+        i += 1
+    return "".join(result)
+
+
+def _try_close_truncated_json(s: str) -> str:
+    """If s is truncated (unterminated string or missing braces), try to close it for parsing."""
+    # Count unclosed structure
+    open_braces = s.count("{") - s.count("}")
+    open_brackets = s.count("[") - s.count("]")
+    if open_braces <= 0 and open_brackets <= 0:
+        return s
+    # If we're inside an unclosed string (ends on odd number of quotes outside of escaped), close the string first
+    in_double = False
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == '"' and (i == 0 or s[i - 1] != "\\"):
+            in_double = not in_double
+        i += 1
+    if in_double:
+        s = s + '"'
+    s = s + ("]" * open_brackets) + ("}" * open_braces)
+    return s
+
+
+def _try_parse_json_or_python_dict(s: str) -> dict[str, Any] | list[Any]:
+    """Try json.loads; on failure try ast.literal_eval (handles single-quoted keys/values) and control-char escape."""
+    s = _replace_backtick_strings(s)
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError as e:
+        err_str = str(e).lower()
+        if "control character" in err_str:
+            s = _escape_control_in_double_quoted_strings(s)
+            try:
+                return json.loads(s)
+            except json.JSONDecodeError:
+                pass
+        if "unterminated string" in err_str:
+            try:
+                closed = _try_close_truncated_json(s)
+                return json.loads(closed)
+            except json.JSONDecodeError:
+                pass
+        if "expecting" in err_str and "delimiter" in err_str and ":" in err_str:
+            try:
+                fixed = _fix_missing_colon_between_quoted(s)
+                if fixed != s:
+                    return json.loads(fixed)
+            except json.JSONDecodeError:
+                pass
+    # Remove trailing commas so ast.literal_eval accepts
+    s_clean = re.sub(r",\s*}", "}", s)
+    s_clean = re.sub(r",\s*]", "]", s_clean)
+    try:
+        out = ast.literal_eval(s_clean)
+        if isinstance(out, (dict, list)):
+            return out
+    except (ValueError, SyntaxError):
+        pass
+    s = _fix_single_quoted_keys(s)
+    return json.loads(s)
+
+
+def _extract_first_json_object(s: str) -> str:
+    """Extract substring from first { to matching }; no skip logic. For aggressive fallback."""
     start = s.find("{")
     if start == -1:
-        raise ValueError("No '{' found in model output")
+        raise ValueError("No '{' found")
     depth = 0
     for i in range(start, len(s)):
         if s[i] == "{":
@@ -54,7 +176,51 @@ def _extract_json_object(s: str) -> str:
             depth -= 1
             if depth == 0:
                 return s[start : i + 1]
+    last_brace = s.rfind("}", start)
+    if last_brace > start:
+        return s[start : last_brace + 1]
     raise ValueError("No matching '}' for JSON object")
+
+
+def _extract_json_object(s: str) -> str:
+    """Find JSON object: skip prompt example (contains "<arxiv_id>"). Prefer one that contains "topics" (real schema); else last without placeholder."""
+    skip_marker = "<arxiv_id>"
+    pos = 0
+    best: str | None = None
+    while True:
+        start = s.find("{", pos)
+        if start == -1:
+            if best is not None:
+                return best
+            raise ValueError("No '{' found in model output")
+        depth = 0
+        end = -1
+        for i in range(start, len(s)):
+            if s[i] == "{":
+                depth += 1
+            elif s[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end == -1:
+            last_brace = s.rfind("}", start)
+            if last_brace > start:
+                end = last_brace + 1
+            else:
+                end = len(s)
+        candidate = s[start:end]
+        if skip_marker not in candidate:
+            # Prefer object that has both paper_id and topics keys (Stage1 schema)
+            if re.search(r'["\']paper_id["\']\s*:', candidate) and re.search(r'["\']topics["\']\s*:', candidate):
+                return candidate
+            best = candidate
+        pos = end
+        if end >= len(s):
+            break
+    if best is not None:
+        return best
+    raise ValueError("No '{' found in model output")
 
 
 def _normalize_json_raw(raw: str) -> str:
@@ -74,8 +240,8 @@ def _normalize_json_raw(raw: str) -> str:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         s = "\n".join(lines).strip()
-    if not s.startswith("{"):
-        s = _extract_json_object(s)
+    # Always extract via _extract_json_object so we skip prompt example {"paper_id": "<arxiv_id>", ...}
+    s = _extract_json_object(s)
     return s
 
 
@@ -131,28 +297,36 @@ def chat_completion(
     max_retries: int = 3,
     base_delay: float = 2.0,
     server_restart_wait_s: int = SERVER_RESTART_WAIT_S,
+    extra_body: dict[str, Any] | None = None,
 ) -> str:
     """
     Call /chat/completions. Returns content string. Raises on final failure.
 
-    Retry strategy:
-    - Up to max_retries attempts with exponential backoff (base_delay * 2^attempt).
-    - After all retries fail, waits server_restart_wait_s for LLM server to restart,
-      then makes one final attempt.
-    - Set server_restart_wait_s=0 to skip the long wait (e.g. for parallel Stage 1).
+    extra_body: passed to the API (e.g. vLLM chat_template_kwargs).
+    Returns only message.content (final answer). When vLLM is started with
+    --reasoning-parser qwen3, thinking is in message.reasoning and content
+    is the final answer only; without the parser, content may contain both.
     """
+    kwargs: dict[str, Any] = {
+        "model": model_name,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "timeout": timeout_s,
+    }
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+
     last_err = None
     for attempt in range(max_retries):
         try:
-            r = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout=timeout_s,
-            )
+            r = client.chat.completions.create(**kwargs)
             if r.choices and len(r.choices) > 0:
-                return (r.choices[0].message.content or "").strip()
+                msg = r.choices[0].message
+                # vLLM with --reasoning-parser: message.reasoning = thinking, message.content = final answer only
+                if getattr(msg, "reasoning", None):
+                    logger.debug("Response has reasoning + content; using content only for parsing")
+                return (msg.content or "").strip()
             raise ValueError("Empty completion")
         except Exception as e:
             last_err = e
@@ -177,15 +351,10 @@ def chat_completion(
         )
         time.sleep(server_restart_wait_s)
         try:
-            r = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout=timeout_s,
-            )
+            r = client.chat.completions.create(**kwargs)
             if r.choices and len(r.choices) > 0:
-                return (r.choices[0].message.content or "").strip()
+                msg = r.choices[0].message
+                return (msg.content or "").strip()
         except Exception as e:
             last_err = e
             logger.warning("Final attempt after server restart wait also failed: %s", e)
@@ -193,36 +362,46 @@ def chat_completion(
     raise last_err or RuntimeError("Model call failed")
 
 
-def parse_stage1_json(raw: str, paper_id: str) -> dict[str, Any]:
+def _validate_stage1_data(data: dict[str, Any], paper_id: str) -> dict[str, Any]:
     """
-    Parse Stage-1 JSON. Validate and clamp relevance to [0,1].
-    Raises ValueError on parse/schema failure.
+    Validate and normalize Stage1 dict: paper_id, topics (list of dicts), relevance clamp, decision.
+    Call this after you have a dict (from any extraction path). Raises ValueError on invalid schema.
     """
-    try:
-        s = _normalize_json_raw(raw)
-    except ValueError as e:
-        logger.debug("Stage1 raw (first 400 chars): %r", (raw or "")[:400])
-        raise ValueError(f"Invalid JSON: {e}") from e
-    try:
-        data = json.loads(s)
-    except json.JSONDecodeError as e:
-        logger.warning("Stage1 JSON parse error for %s; raw snippet: %r", paper_id, (raw or "")[:400])
-        raise ValueError(f"Invalid JSON: {e}") from e
-
     if not isinstance(data, dict):
         raise ValueError("Expected a JSON object")
-    # Normalise paper_id (model may return number or string)
     raw_pid = data.get("paper_id")
     data["paper_id"] = str(raw_pid) if raw_pid is not None else paper_id
     if data["paper_id"] != paper_id:
         data["paper_id"] = paper_id
 
-    topics = data.get("topics")
-    if not isinstance(topics, list):
+    topics_raw = data.get("topics")
+    if not isinstance(topics_raw, list):
         raise ValueError("Missing or invalid 'topics' array")
+    topics: list[dict[str, Any]] = []
+    for t in topics_raw:
+        if isinstance(t, dict):
+            # Accept topic_id from id/topic alias; coerce relevance from string
+            tid = t.get("topic_id") or t.get("id") or t.get("topic")
+            if tid is not None:
+                t = dict(t)
+                t["topic_id"] = str(tid)
+            else:
+                t = dict(t)
+                t["topic_id"] = str(t.get("topic_id", ""))
+            topics.append(t)
+        elif isinstance(t, (list, tuple)) and len(t) >= 2:
+            try:
+                topics.append({
+                    "topic_id": str(t[0]),
+                    "relevance": max(0.0, min(1.0, float(t[1]))),
+                    "reason": str(t[2]) if len(t) > 2 else "",
+                })
+            except (TypeError, ValueError):
+                pass
+    if not topics:
+        raise ValueError("Missing or invalid 'topics' array (no valid topic objects)")
+    data["topics"] = topics
     for t in topics:
-        if not isinstance(t, dict):
-            raise ValueError("Each topic must be an object")
         r = t.get("relevance")
         if r is not None:
             try:
@@ -239,25 +418,86 @@ def parse_stage1_json(raw: str, paper_id: str) -> dict[str, Any]:
     return data
 
 
-def parse_stage2_json(raw: str, paper_id: str) -> dict[str, Any]:
+def parse_stage1_json(raw: str, paper_id: str) -> dict[str, Any]:
     """
-    Parse Stage-2 summary JSON. Validate types and clamp relevance.
+    Parse Stage-1 JSON. Validate and clamp relevance to [0,1].
+    Raises ValueError on parse/schema failure.
     """
     try:
         s = _normalize_json_raw(raw)
     except ValueError as e:
-        logger.debug("Stage2 raw (first 400 chars): %r", (raw or "")[:400])
+        logger.debug("Stage1 raw (first 400 chars): %r", (raw or "")[:400])
         raise ValueError(f"Invalid JSON: {e}") from e
     try:
-        data = json.loads(s)
-    except json.JSONDecodeError as e:
-        logger.warning("Stage2 JSON parse error for %s; raw snippet: %r", paper_id, (raw or "")[:400])
+        data = _try_parse_json_or_python_dict(s)
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("Stage1 JSON parse error for %s; raw snippet: %r", paper_id, (raw or "")[:400])
         raise ValueError(f"Invalid JSON: {e}") from e
+    return _validate_stage1_data(data, paper_id)
 
+
+def try_parse_stage1_aggressive(raw: str, paper_id: str) -> tuple[dict[str, Any] | None, Exception | None]:
+    """
+    Try multiple extraction/parse strategies. Returns (data, None) on success, (None, error) on failure.
+    Use when parse_stage1_json failed so we can still recover without another LLM call.
+    """
+    last_err: Exception = ValueError("Parse failed")
+    # 1) Standard path
+    try:
+        return parse_stage1_json(raw, paper_id), None
+    except ValueError as e:
+        last_err = e
+
+    # 2) Strip to first { ... last } and parse (no skip of prompt example)
+    try:
+        s = raw.strip()
+        s = _strip_think_tags(s)
+        s = _strip_leading_reasoning(s)
+        s = _extract_first_json_object(s)
+        data = _try_parse_json_or_python_dict(s)
+        return _validate_stage1_data(data, paper_id), None
+    except Exception as e:
+        last_err = e
+
+    # 3) Apply backtick/single-quote fixes to full raw, then first-object extract
+    try:
+        s = _replace_backtick_strings(raw.strip())
+        s = _strip_think_tags(s)
+        s = _strip_leading_reasoning(s)
+        if s.startswith("```"):
+            lines = s.split("\n")
+            if lines[0].strip().startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            s = "\n".join(lines).strip()
+        s = _extract_first_json_object(s)
+        s = _fix_single_quoted_keys(s)
+        data = json.loads(s)
+        return _validate_stage1_data(data, paper_id), None
+    except Exception as e:
+        last_err = e
+
+    # 4) Literal first { to last } in raw (no strip reasoning)
+    try:
+        start = raw.find("{")
+        if start != -1:
+            end = raw.rfind("}")
+            if end > start:
+                s = raw[start : end + 1]
+                data = _try_parse_json_or_python_dict(s)
+                return _validate_stage1_data(data, paper_id), None
+    except Exception as e:
+        last_err = e
+
+    return None, last_err
+
+
+def _validate_stage2_data(data: dict[str, Any], paper_id: str) -> dict[str, Any]:
+    """Validate and fill Stage2 dict. Call after you have a dict from any extraction path."""
     if not isinstance(data, dict):
         raise ValueError("Expected a JSON object")
     data["paper_id"] = data.get("paper_id") or paper_id
-
     for key in ("key_challenges", "assumptions_limitations", "evidence_results", "takeaways"):
         val = data.get(key)
         if val is None:
@@ -266,7 +506,6 @@ def parse_stage2_json(raw: str, paper_id: str) -> dict[str, Any]:
             data[key] = [str(val)]
         else:
             data[key] = [str(x) for x in val]
-
     if "topics" in data and isinstance(data["topics"], list):
         for t in data["topics"]:
             if isinstance(t, dict) and "relevance" in t:
@@ -274,13 +513,53 @@ def parse_stage2_json(raw: str, paper_id: str) -> dict[str, Any]:
                     t["relevance"] = max(0.0, min(1.0, float(t["relevance"])))
                 except (TypeError, ValueError):
                     t["relevance"] = 0.0
-
     for key in ("problem", "motivation", "approach", "title", "categories", "published"):
         if data.get(key) is None:
             data[key] = "" if key != "categories" else []
         elif key == "categories" and not isinstance(data[key], list):
             data["categories"] = [str(data["categories"])]
     return data
+
+
+def parse_stage2_json(raw: str, paper_id: str) -> dict[str, Any]:
+    """Parse Stage-2 summary JSON. Validate types and clamp relevance."""
+    try:
+        s = _normalize_json_raw(raw)
+    except ValueError as e:
+        logger.debug("Stage2 raw (first 400 chars): %r", (raw or "")[:400])
+        raise ValueError(f"Invalid JSON: {e}") from e
+    try:
+        data = _try_parse_json_or_python_dict(s)
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("Stage2 JSON parse error for %s; raw snippet: %r", paper_id, (raw or "")[:400])
+        raise ValueError(f"Invalid JSON: {e}") from e
+    return _validate_stage2_data(data, paper_id)
+
+
+def try_parse_stage2_aggressive(raw: str, paper_id: str) -> tuple[dict[str, Any] | None, Exception | None]:
+    """Try multiple extraction strategies for Stage2. Returns (data, None) or (None, error)."""
+    last_err: Exception = ValueError("Parse failed")
+    try:
+        return parse_stage2_json(raw, paper_id), None
+    except ValueError as e:
+        last_err = e
+    try:
+        s = raw.strip()
+        s = _strip_think_tags(s)
+        s = _strip_leading_reasoning(s)
+        s = _extract_first_json_object(s)
+        data = _try_parse_json_or_python_dict(s)
+        return _validate_stage2_data(data, paper_id), None
+    except Exception as e:
+        last_err = e
+    try:
+        start, end = raw.find("{"), raw.rfind("}")
+        if start != -1 and end > start:
+            data = _try_parse_json_or_python_dict(raw[start : end + 1])
+            return _validate_stage2_data(data, paper_id), None
+    except Exception as e:
+        last_err = e
+    return None, last_err
 
 
 def build_stage1_batch_prompt(
@@ -303,10 +582,11 @@ def build_stage1_batch_prompt(
     )
     n = len(papers)
     system = (
-        "You are a batch classifier. For each paper in the list, assign each topic a relevance "
+        "You are a batch classifier. For each paper, assign each topic a relevance "
         "score in [0, 1] with a short reason (<=25 words). "
-        "Output ONLY a single valid JSON array, one object per paper, in input order. "
-        "No <think>, no reasoning text, no markdown. Start your response with [."
+        "Your entire reply must be exactly one valid JSON array: no 'Thinking Process', "
+        "no <think>, no reasoning, no markdown. Use double quotes for all keys and strings. "
+        "Start your response with [."
     )
     user = (
         f"Topics:\n{topics_desc}\n\n"
@@ -332,7 +612,10 @@ def parse_stage1_batch_json(
     Raises ValueError if JSON is unparseable (caller should fall back to individual calls).
     """
     s = _normalize_json_raw_array(raw)
-    data = json.loads(s)
+    try:
+        data = _try_parse_json_or_python_dict(s)
+    except (json.JSONDecodeError, ValueError):
+        raise ValueError("Invalid JSON: unparseable batch array") from None
     if not isinstance(data, list):
         raise ValueError(f"Expected JSON array, got {type(data).__name__}")
 
@@ -400,8 +683,9 @@ def build_stage1_prompt(topics_config: list[dict], paper: dict[str, Any]) -> lis
     )
     system = (
         "You are a classifier. For each paper, assign each topic a relevance score in [0, 1] "
-        "and give a short reason (<=40 words). Output ONLY a single valid JSON object: no <think>, "
-        "no reasoning text, no markdown, no explanation. Start your response with {."
+        "and give a short reason (<=40 words). Your entire reply must be exactly one valid JSON object: "
+        "no 'Thinking Process', no <think>, no reasoning, no markdown, no text before or after. "
+        "Use double quotes for all keys and strings. Start your response with {."
     )
     user = (
         f"Topics:\n{topics_desc}\n\nPaper:\n{paper_blob}\n\n"

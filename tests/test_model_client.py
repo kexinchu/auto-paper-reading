@@ -54,6 +54,64 @@ def test_parse_stage1_json_with_thinking_process_prefix():
     assert out["topics"][0]["relevance"] == 0.75
 
 
+def test_parse_stage1_json_single_quoted_keys():
+    """Model returns Python-style single-quoted keys; we fix and parse."""
+    raw = (
+        "Thinking Process:\n\n1. Analyze...\n\n"
+        "{'paper_id': '2603.05425v1', 'topics': [{'topic_id': 'llm-opt', 'relevance': 0.8, 'reason': 'LLM'}], "
+        "'overall_relevance': 0.8, 'decision': 'keep'}"
+    )
+    out = model_client.parse_stage1_json(raw, "2603.05425v1")
+    assert out["paper_id"] == "2603.05425v1"
+    assert out["decision"] == "keep"
+    assert out["topics"][0]["topic_id"] == "llm-opt"
+    assert out["topics"][0]["relevance"] == 0.8
+
+
+def test_parse_stage1_json_backtick_in_output():
+    """Model returns topic_id with backticks (e.g. `llm-opt`); we replace and parse."""
+    raw = (
+        "Thinking Process:\n\n1. Analyze...\n\n"
+        "{'paper_id': '2603.02510v1', 'topics': [{'topic_id': `llm-opt`, 'relevance': 0.7, 'reason': 'x'}], "
+        "'overall_relevance': 0.7, 'decision': 'drop'}"
+    )
+    out = model_client.parse_stage1_json(raw, "2603.02510v1")
+    assert out["paper_id"] == "2603.02510v1"
+    assert out["decision"] == "drop"
+    assert out["topics"][0]["topic_id"] == "llm-opt"
+
+
+def test_parse_stage1_topics_mixed_shapes():
+    """Model returns topics with non-dict entries; we keep dicts and coerce [id, rel] lists."""
+    raw = (
+        '{"paper_id":"2603.05392v1","topics":[{"topic_id":"llm-opt","relevance":0.8,"reason":"x"},'
+        '["anns",0.3]],"overall_relevance":0.8,"decision":"keep"}'
+    )
+    out = model_client.parse_stage1_json(raw, "2603.05392v1")
+    assert out["paper_id"] == "2603.05392v1"
+    assert out["decision"] == "keep"
+    assert len(out["topics"]) == 2
+    assert out["topics"][0]["topic_id"] == "llm-opt" and out["topics"][0]["relevance"] == 0.8
+    assert out["topics"][1]["topic_id"] == "anns" and out["topics"][1]["relevance"] == 0.3
+
+
+def test_parse_stage1_topic_id_alias():
+    """Model returns topic with "id" or "topic" instead of "topic_id"; we accept and normalize."""
+    raw = '{"paper_id":"x","topics":[{"id":"llm-opt","relevance":"0.8"}],"decision":"keep"}'
+    out = model_client.parse_stage1_json(raw, "x")
+    assert out["topics"][0]["topic_id"] == "llm-opt"
+    assert out["topics"][0]["relevance"] == 0.8
+
+
+def test_parse_stage1_missing_colon():
+    """Model returns \"key\" \"value\" without colon; we fix and parse."""
+    raw = '{"paper_id" "2603.05370v1", "topics": [{"topic_id" "llm-opt", "relevance": 0.7}], "decision": "drop"}'
+    out = model_client.parse_stage1_json(raw, "2603.05370v1")
+    assert out["paper_id"] == "2603.05370v1"
+    assert out["topics"][0]["topic_id"] == "llm-opt"
+    assert out["topics"][0]["relevance"] == 0.7
+
+
 def test_parse_stage2_json():
     raw = '''{"paper_id":"2401.2","title":"T","categories":["cs.LG"],"problem":"P","motivation":"M","key_challenges":["C1"],"approach":"A","assumptions_limitations":[],"evidence_results":["E1"],"takeaways":["t1","t2","t3"]}'''
     out = model_client.parse_stage2_json(raw, "2401.2")

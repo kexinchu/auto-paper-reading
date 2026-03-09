@@ -22,6 +22,10 @@ DEFAULT_MAX_RETRIES_429 = 3
 DEFAULT_BACKOFF_BASE_S = 60
 
 
+# User-Agent 可提高无 key 时的配额（官方建议带项目/联系方式）
+DEFAULT_USER_AGENT = "arxiv-digest/1.0 (mailto:user@example.com)"
+
+
 def fetch_papers(
     queries: list[str],
     limit: int = DEFAULT_LIMIT,
@@ -30,17 +34,27 @@ def fetch_papers(
     delay_between_queries: float = DEFAULT_DELAY_BETWEEN_QUERIES,
     max_retries_429: int = DEFAULT_MAX_RETRIES_429,
     backoff_base_s: float = DEFAULT_BACKOFF_BASE_S,
+    api_key: str | None = None,
+    user_agent: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Search Semantic Scholar for each query. API returns results in relevance order.
     If top_k_by_relevance is set: take first N by relevance, then sort by citationCount desc for processing order.
     Returns list of dicts compatible with pipeline.
     On 429: retries with exponential backoff (and optional Retry-After).
+
+    429 规避：无 API key 时全局限流约 100 次/5 分钟（共享）；带 key 后限流大幅放宽。
+    建议：1) 申请 key 填 api_key  2) 无 key 时拉大 delay_between_queries 或减少 queries/limit。
     """
     seen_ids: set[str] = set()
     all_papers: list[dict[str, Any]] = []
-    # Request enough per query so we can take top_k by relevance across all queries
     fetch_limit = max(limit, top_k_by_relevance or 0, 100)
+
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["x-api-key"] = api_key
+    if user_agent:
+        headers["User-Agent"] = user_agent
 
     for qi, q in enumerate(queries):
         if qi > 0:
@@ -54,7 +68,7 @@ def fetch_papers(
         data = None
         for attempt in range(max_retries_429 + 1):
             try:
-                r = requests.get(BASE_URL, params=params, timeout=timeout_s)
+                r = requests.get(BASE_URL, params=params, headers=headers or None, timeout=timeout_s)
                 if r.status_code == 429:
                     wait_s = backoff_base_s * (2 ** attempt)
                     retry_after = r.headers.get("Retry-After")
