@@ -81,11 +81,11 @@ def _h(text: str) -> str:
 
 
 def _paper_link(paper_id: str) -> str:
-    """Return arXiv or Semantic Scholar URL for a paper_id."""
+    """Return arXiv PDF or Semantic Scholar URL for a paper_id."""
     if paper_id.startswith("semantic_scholar:"):
         ss_id = paper_id[len("semantic_scholar:"):]
         return f"https://www.semanticscholar.org/paper/{ss_id}"
-    return f"https://arxiv.org/abs/{paper_id}"
+    return f"https://arxiv.org/pdf/{paper_id}"
 
 
 def _build_paper_html(idx: int, summary: dict[str, Any]) -> str:
@@ -128,19 +128,19 @@ def _build_paper_html(idx: int, summary: dict[str, Any]) -> str:
   </div>
   <div class="topic-tags">{tags_html if tags_html else "<em>No matched topics</em>"}</div>
   <hr>
-  <div class="section-title">Problem</div>
+  <div class="section-title">问题</div>
   <p class="section-body">{_h(summary.get("problem", ""))}</p>
-  <div class="section-title">Motivation</div>
+  <div class="section-title">动机</div>
   <p class="section-body">{_h(summary.get("motivation", ""))}</p>
-  <div class="section-title">Key Challenges</div>
+  <div class="section-title">关键挑战</div>
   {bullet_list(summary.get("key_challenges", []))}
-  <div class="section-title">Approach</div>
+  <div class="section-title">方法</div>
   <p class="section-body">{_h(summary.get("approach", ""))}</p>
-  <div class="section-title">Assumptions / Limitations</div>
+  <div class="section-title">假设与局限</div>
   {bullet_list(summary.get("assumptions_limitations", []))}
-  <div class="section-title">Evidence / Results</div>
+  <div class="section-title">实验结果</div>
   {bullet_list(summary.get("evidence_results", []))}
-  <div class="section-title">Takeaways</div>
+  <div class="section-title">要点总结</div>
   {bullet_list(summary.get("takeaways", []))}
   <a class="arxiv-link" href="{link}">→ 查看原文</a>
 </div>

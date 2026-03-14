@@ -497,7 +497,8 @@ def _validate_stage2_data(data: dict[str, Any], paper_id: str) -> dict[str, Any]
     """Validate and fill Stage2 dict. Call after you have a dict from any extraction path."""
     if not isinstance(data, dict):
         raise ValueError("Expected a JSON object")
-    data["paper_id"] = data.get("paper_id") or paper_id
+    # Always force the authoritative paper_id (LLM often outputs "arXiv:..." or garbage)
+    data["paper_id"] = paper_id
     for key in ("key_challenges", "assumptions_limitations", "evidence_results", "takeaways"):
         val = data.get(key)
         if val is None:
@@ -716,13 +717,16 @@ def build_stage2_prompt(
     )
     system = (
         "You produce a structured summary in JSON only. Be concise and faithful. "
-        "If evidence is missing, say 'not clearly reported'. Output ONLY valid JSON, no markdown."
+        "All text values (problem, motivation, key_challenges, approach, "
+        "assumptions_limitations, evidence_results, takeaways) MUST be written in 简体中文. "
+        "If evidence is missing, say '未明确报告'. Output ONLY valid JSON, no markdown."
     )
     user = (
         f"Paper metadata:\n{meta}\n\nFull text (extract):\n{full_text}\n\n"
         "Output JSON with: paper_id, title, categories, published, topics (from stage1), "
         "problem, motivation, key_challenges (array), approach, assumptions_limitations (array), "
-        "evidence_results (array), takeaways (exactly 3 bullets)."
+        "evidence_results (array), takeaways (exactly 3 bullets). "
+        "All descriptive text fields must be in 简体中文."
     )
     return [
         {"role": "system", "content": system},

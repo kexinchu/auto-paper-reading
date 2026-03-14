@@ -221,17 +221,25 @@ def get_unemailed_summaries(db_path: str | Path) -> list[dict[str, Any]]:
         results = []
         for row in cur.fetchall():
             try:
-                results.append(_json.loads(row["stage2_json"]))
+                summary = _json.loads(row["stage2_json"])
+                # Always use DB arxiv_id as authoritative paper_id
+                # (LLM may have generated wrong paper_id like "arXiv:..." or garbage)
+                summary["paper_id"] = row["arxiv_id"]
+                results.append(summary)
             except Exception as e:
                 logger.warning("Could not parse stage2_json for %s: %s", row["arxiv_id"], e)
         return results
 
 
 def get_processed_titles(db_path: str | Path) -> set[str]:
-    """Return titles of all papers not in FAILED status (to detect cross-source duplicates)."""
+    """Return titles of papers in truly-done states (EMAILED, SKIPPED, STAGE2_OK) to detect
+    cross-source duplicates. In-progress states (STAGE1_OK, STAGE1_RELEVANT, etc.) are excluded
+    so stuck papers can be re-fetched and resume from checkpoint on the next run."""
+    statuses = tuple(PROCESSED_STATUSES)
+    placeholders = ",".join("?" * len(statuses))
     with _conn(db_path) as conn:
         cur = conn.execute(
-            "SELECT title FROM papers WHERE status != ?", (FAILED,)
+            f"SELECT title FROM papers WHERE status IN ({placeholders})", statuses
         )
         return {row["title"] for row in cur.fetchall() if row["title"]}
 
