@@ -68,6 +68,24 @@ def ensure_db(db_path: str | Path) -> None:
             logger.info("Migration: added retry_count column")
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+        # Blog posts table (separate from papers — no PDF, no Stage1/2)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS blog_posts (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                url TEXT NOT NULL UNIQUE,
+                summary TEXT,
+                published TEXT,
+                source TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'NEW',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_blog_status ON blog_posts(status)"
+        )
         conn.commit()
     logger.info("Database ready at %s", path)
 
@@ -255,3 +273,56 @@ def get_run_stats(db_path: str | Path, since: str | None = None) -> dict[str, in
         else:
             cur = conn.execute("SELECT status, COUNT(*) as cnt FROM papers GROUP BY status")
         return {row["status"]: row["cnt"] for row in cur.fetchall()}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Blog posts
+# ──────────────────────────────────────────────────────────────────────────────
+
+def is_blog_post_seen(db_path: str | Path, url: str) -> bool:
+    """True if a blog post with this URL already exists in DB (any status)."""
+    with _conn(db_path) as conn:
+        cur = conn.execute("SELECT 1 FROM blog_posts WHERE url = ?", (url,))
+        return cur.fetchone() is not None
+
+
+def upsert_blog_post(
+    db_path: str | Path,
+    post_id: str,
+    title: str,
+    url: str,
+    summary: str,
+    published: str,
+    source: str,
+    status: str = NEW,
+) -> None:
+    """Insert or skip (if URL already exists) a blog post."""
+    now = _utc_now()
+    with _conn(db_path) as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO blog_posts
+               (id, title, url, summary, published, source, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (post_id, title, url, summary, published, source, status, now, now),
+        )
+        conn.commit()
+
+
+def mark_blog_status(db_path: str | Path, post_id: str, status: str) -> None:
+    """Update blog post status."""
+    now = _utc_now()
+    with _conn(db_path) as conn:
+        conn.execute(
+            "UPDATE blog_posts SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, post_id),
+        )
+        conn.commit()
+
+
+def get_unemailed_blog_posts(db_path: str | Path) -> list[dict[str, Any]]:
+    """Return blog posts in NEW status (not yet emailed)."""
+    with _conn(db_path) as conn:
+        cur = conn.execute(
+            "SELECT * FROM blog_posts WHERE status = ?", (NEW,)
+        )
+        return [dict(row) for row in cur.fetchall()]

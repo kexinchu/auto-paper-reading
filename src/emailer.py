@@ -147,6 +147,66 @@ def _build_paper_html(idx: int, summary: dict[str, Any]) -> str:
 """
 
 
+def _build_blog_post_html(idx: int, post: dict[str, Any]) -> str:
+    """Build HTML card for a single blog post."""
+    title = post.get("title", "(Untitled)")
+    url = post.get("url", "")
+    source = post.get("source", "")
+    published = post.get("published", "")
+    summary = post.get("summary", "")
+
+    # Truncate summary for email display
+    if len(summary) > 500:
+        summary = summary[:500] + "..."
+
+    return f"""
+<div class="paper" id="blog{idx}">
+  <h2>{idx}. {_h(title)}</h2>
+  <div class="paper-meta">
+    <b>Source:</b> {_h(source)} &nbsp;|&nbsp;
+    <b>Published:</b> {_h(published[:10] if published else "")} &nbsp;|&nbsp;
+    <a href="{_h(url)}" style="color:#2980b9;font-weight:600">Read Full Post</a>
+  </div>
+  <hr>
+  <p class="section-body">{_h(summary) if summary else "<em>No summary available — click to read</em>"}</p>
+  <a class="arxiv-link" href="{_h(url)}">→ Read Full Post</a>
+</div>
+"""
+
+
+def _build_blog_section_html(blog_posts: list[dict[str, Any]]) -> str:
+    """Build the Blog & Community section for the digest."""
+    if not blog_posts:
+        return ""
+
+    # Group by source
+    by_source: dict[str, list[dict]] = {}
+    for post in blog_posts:
+        src = post.get("source", "Other")
+        by_source.setdefault(src, []).append(post)
+
+    parts = [
+        '<div class="topic-section" id="topic-blogs">',
+        '<div class="topic-section-header" style="background:linear-gradient(90deg,#8e44ad 0%,#9b59b6 100%)">',
+        f'Blog & Community Updates',
+        f'<span class="topic-section-count">{len(blog_posts)} posts</span>',
+        '</div></div>',
+    ]
+
+    global_idx = 1
+    for source_name, posts in by_source.items():
+        parts.append(
+            f'<div style="margin:18px 0 8px;padding:6px 14px;background:#f3e8ff;'
+            f'border-left:4px solid #8e44ad;border-radius:4px;font-weight:600;color:#6b21a8">'
+            f'{_h(source_name)} ({len(posts)})</div>'
+        )
+        for post in posts:
+            parts.append(_build_blog_post_html(global_idx, post))
+            global_idx += 1
+
+    return "\n".join(parts)
+
+
 def _get_primary_topic(summary: dict[str, Any]) -> str | None:
     """Return the topic_id with the highest relevance score, or None."""
     topics = summary.get("topics") or []
@@ -168,6 +228,7 @@ def format_html_digest(
     date_str: str,
     stats: dict[str, Any] | None = None,
     topics_config: list[dict[str, Any]] | None = None,
+    blog_posts: list[dict[str, Any]] | None = None,
 ) -> str:
     """
     Build a complete HTML digest email for multiple papers.
@@ -259,6 +320,16 @@ def format_html_digest(
         )
         papers_html = "\n".join(_build_paper_html(i + 1, s) for i, s in enumerate(ordered))
 
+    # Blog section
+    blog_html = _build_blog_section_html(blog_posts or [])
+    blog_toc = ""
+    if blog_posts:
+        blog_toc = (
+            f'<div style="margin-top:12px;padding-top:8px;border-top:1px solid #ddd">'
+            f'<a href="#topic-blogs" style="color:#8e44ad;font-weight:600">'
+            f'Blog & Community ({len(blog_posts)} posts)</a></div>'
+        )
+
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -271,7 +342,9 @@ def format_html_digest(
   <h1>arXiv Digest — {_h(date_str)}</h1>
   <p class="stats">{stats_line}</p>
   {toc_html}
+  {blog_toc}
   {papers_html}
+  {blog_html}
   <p class="footer">由 auto-paper-reading 自动生成 · {_h(date_str)}</p>
 </body>
 </html>"""

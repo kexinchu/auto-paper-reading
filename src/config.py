@@ -101,3 +101,20 @@ def validate_config(c: dict[str, Any]) -> None:
             raise ValueError("config.semantic_scholar.enabled must be bool when section is present")
         if ss.get("enabled") and (not isinstance(ss.get("queries"), list) or not ss["queries"]):
             raise ValueError("config.semantic_scholar.queries must be a non-empty list when enabled")
+
+    # Optional: Blog monitoring (RSS feeds + HTML scraping)
+    if "blogs" in c:
+        blogs = c["blogs"]
+        if not isinstance(blogs.get("enabled"), bool):
+            raise ValueError("config.blogs.enabled must be bool when section is present")
+        if blogs.get("enabled"):
+            sources = blogs.get("sources")
+            if not isinstance(sources, list) or not sources:
+                raise ValueError("config.blogs.sources must be a non-empty list when enabled")
+            for i, src in enumerate(sources):
+                if not src.get("name"):
+                    raise ValueError(f"config.blogs.sources[{i}].name is required")
+                if not src.get("url"):
+                    raise ValueError(f"config.blogs.sources[{i}].url is required")
+                if src.get("type") not in ("rss", "html"):
+                    raise ValueError(f"config.blogs.sources[{i}].type must be 'rss' or 'html'")

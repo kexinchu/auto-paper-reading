@@ -23,7 +23,7 @@ from typing import Any
 
 from openai import OpenAI
 
-from . import arxiv_client, db, emailer, model_client, pdf_utils
+from . import arxiv_client, blog_client, db, emailer, model_client, pdf_utils
 from .config import load_config
 from .topics import load_topics
 
@@ -624,6 +624,39 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
             db.mark_status(db_path, arxiv_id, db.FAILED, error_message=str(e))
             stats["stage2_failed"] += 1
 
+    # ── Phase 3b: Fetch blog posts (no LLM, direct to digest) ─────────────────
+    blog_posts_for_digest: list[dict[str, Any]] = []
+    blogs_cfg = config.get("blogs") or {}
+    if blogs_cfg.get("enabled") and blogs_cfg.get("sources"):
+        try:
+            blog_days_back = int(blogs_cfg.get("days_back", 3))
+            delay = float(blogs_cfg.get("delay_between_sources", 2.0))
+            all_blog_posts = blog_client.fetch_all_blogs(
+                blogs_cfg["sources"],
+                days_back=blog_days_back,
+                delay_between_sources=delay,
+            )
+            new_blog_count = 0
+            for post in all_blog_posts:
+                if db.is_blog_post_seen(db_path, post["url"]):
+                    continue
+                db.upsert_blog_post(
+                    db_path, post["id"], post["title"], post["url"],
+                    post["summary"], post["published"], post["source"],
+                )
+                blog_posts_for_digest.append(post)
+                new_blog_count += 1
+            # Also recover unemailed blog posts from prior failed runs
+            for post in db.get_unemailed_blog_posts(db_path):
+                if post["url"] not in {p["url"] for p in blog_posts_for_digest}:
+                    blog_posts_for_digest.append(dict(post))
+            logger.info(
+                "Blogs: %d fetched, %d new, %d total for digest",
+                len(all_blog_posts), new_blog_count, len(blog_posts_for_digest),
+            )
+        except Exception as e:
+            logger.warning("Blog fetch failed: %s", e)
+
     # ── Phase 4: Recover any STAGE2_OK papers from prior failed email runs ────
     already_ids = {s.get("paper_id") for s in digest_summaries}
     for summary in db.get_unemailed_summaries(db_path):
@@ -634,7 +667,9 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
             logger.info("Recovered STAGE2_OK paper for digest: %s", pid)
 
     # ── Phase 5: Topic-grouped HTML digest email(s); at most N papers per email ──
-    if digest_summaries:
+    has_papers = bool(digest_summaries)
+    has_blogs = bool(blog_posts_for_digest)
+    if has_papers or has_blogs:
         email_cfg = config["email"]
         max_per_email = int(email_cfg.get("max_papers_per_digest", 10))
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -642,17 +677,28 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
         chunks: list[list[dict[str, Any]]] = [
             digest_summaries[i : i + max_per_email]
             for i in range(0, total, max_per_email)
-        ]
+        ] if digest_summaries else [[]]
         num_emails = len(chunks)
         for idx, chunk in enumerate(chunks):
             n = len(chunk)
+            # Build subject line reflecting both papers and blogs
+            parts = []
+            if n:
+                parts.append(f"{n} 篇论文")
+            # Only include blog count in the first (or only) email chunk
+            if blog_posts_for_digest and idx == 0:
+                parts.append(f"{len(blog_posts_for_digest)} 篇博客")
+            content_desc = " + ".join(parts) if parts else "digest"
             if num_emails > 1:
-                subject = f"[arXiv Digest] {date_str} — {n} 篇 (第 {idx + 1}/{num_emails} 封)"
+                subject = f"[AI Digest] {date_str} — {content_desc} (第 {idx + 1}/{num_emails} 封)"
             else:
-                subject = f"[arXiv Digest] {date_str} — {n} 篇相关论文"
+                subject = f"[AI Digest] {date_str} — {content_desc}"
+            # Only pass blog posts to first chunk to avoid duplication
+            chunk_blogs = blog_posts_for_digest if idx == 0 else None
             html_body = emailer.format_html_digest(
                 chunk, date_str, stats,
                 topics_config=topics_list,
+                blog_posts=chunk_blogs,
             )
             try:
                 emailer.send_digest_email(
@@ -669,22 +715,29 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
                 )
                 for summary in chunk:
                     db.mark_status(db_path, summary["paper_id"], db.EMAILED)
+                # Mark blog posts as emailed
+                if chunk_blogs:
+                    for post in chunk_blogs:
+                        db.mark_blog_status(db_path, post["id"], db.EMAILED)
                 stats["emailed"] += n
-                logger.info("Digest email sent: %d papers (part %d/%d) -> %s", n, idx + 1, num_emails, email_cfg["to_addr"])
+                stats["blogs_emailed"] = stats.get("blogs_emailed", 0) + len(chunk_blogs or [])
+                logger.info("Digest email sent: %d papers + %d blogs (part %d/%d) -> %s",
+                            n, len(chunk_blogs or []), idx + 1, num_emails, email_cfg["to_addr"])
             except Exception as e:
                 logger.exception("Digest email failed (chunk %d/%d): %s", idx + 1, num_emails, e)
     else:
-        logger.info("No relevant papers found; no email sent")
+        logger.info("No relevant papers or blogs found; no email sent")
 
     # ── Phase 6: Log run summary ───────────────────────────────────────────────
     elapsed = (datetime.now(timezone.utc) - run_start).total_seconds()
     logger.info(
         "Pipeline finished in %.0fs | fetched=%d skipped_existing=%d skipped_keyword=%d "
         "stage1_run=%d stage1_failed=%d relevant=%d abstract_only=%d "
-        "stage2_ok=%d stage2_failed=%d emailed=%d",
+        "stage2_ok=%d stage2_failed=%d emailed=%d blogs=%d",
         elapsed,
         stats["total"], stats["skipped_existing"], stats["skipped_keyword"],
         stats["stage1_run"], stats["stage1_failed"], stats["relevant"], stats["abstract_only"],
         stats["stage2_ok"], stats["stage2_failed"], stats["emailed"],
+        stats.get("blogs_emailed", 0),
     )
     return stats
