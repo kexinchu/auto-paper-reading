@@ -7,8 +7,11 @@ cd "$SCRIPT_DIR"
 
 # 可配置项（也可通过环境变量覆盖）；改模型时只改此处
 PORT="${MODEL_SERVER_PORT:-8000}"
-MODEL_NAME="${MODEL_NAME:-Qwen3.5-35B-A3B-GPTQ-Int4}"
+MODEL_NAME="${MODEL_NAME:-Qwen3.8-27B}"
 MODEL_DIR="${MODEL_DIR:-$SCRIPT_DIR/Models/$MODEL_NAME}"
+# 27B BF16 ~54GB，单张 A6000 48GB 放不下，默认两卡张量并行
+TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-2}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
 CHECK_INTERVAL_MINUTES="${CHECK_INTERVAL_MINUTES:-10}"
 PID_FILE="$SCRIPT_DIR/logs/model_server.pid"
 LOG_FILE="$SCRIPT_DIR/logs/model_server.log"
@@ -28,23 +31,18 @@ else
   source "$SCRIPT_DIR/venv/bin/activate"
 fi
 
-# Qwen3.5 需新版 transformers（识别 qwen3_5）与 vLLM 主分支（支持 Qwen3_5 架构）
-# echo "==> 升级 transformers（支持 Qwen3.5 架构）..."
+# Qwen3.8 需较新的 transformers / vLLM（识别 qwen3_8 混合注意力）
+# echo "==> 升级 transformers / vLLM 以支持 Qwen3.8 ..."
 # pip install --upgrade "git+https://github.com/huggingface/transformers.git"
-
-# echo "==> 安装 vLLM（从 GitHub 主分支，以支持 Qwen3.5；耗时可能较长）..."
 # pip install --no-cache-dir "vllm@git+https://github.com/vllm-project/vllm.git"
-
-# # vLLM 安装可能覆盖 transformers，再次确保使用最新
-# pip install --upgrade "git+https://github.com/huggingface/transformers.git"
-
 
 MODEL_LOCAL_DIR="$SCRIPT_DIR/Models/$MODEL_NAME"
 if [[ -d "$MODEL_LOCAL_DIR" ]] && [[ -n "$(ls -A "$MODEL_LOCAL_DIR" 2>/dev/null)" ]]; then
   echo "==> 模型目录已存在，跳过下载: $MODEL_LOCAL_DIR"
 else
   pip install modelscope
-  echo "==> 从 ModelScope 下载模型到 ./Models/$MODEL_NAME (GPTQ Int4) ..."
+  echo "==> 从 ModelScope 下载模型到 ./Models/$MODEL_NAME ..."
+  echo "     https://www.modelscope.cn/models/Qwen/$MODEL_NAME"
   mkdir -p "$SCRIPT_DIR/Models"
   modelscope download --model "Qwen/$MODEL_NAME" --local_dir "$MODEL_LOCAL_DIR"
 fi
@@ -71,6 +69,8 @@ start_server() {
     --port "$PORT" \
     --model "$MODEL_DIR" \
     --served-model-name "$MODEL_NAME" \
+    --tensor-parallel-size "$TENSOR_PARALLEL_SIZE" \
+    --max-model-len "$MAX_MODEL_LEN" \
     --gpu-memory-utilization 0.85 \
     >> "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"

@@ -1,73 +1,118 @@
 #!/usr/bin/env bash
-# 定时执行 pipeline：先确保 LLM 服务可用，再执行；失败则每小时重试直至成功。
-# 用法：本脚本单次运行“确保 LLM + 执行 pipeline”；由 crontab 每天 8 点触发，例如：
+# 定时执行 pipeline：GPU 空闲后再启动 LLM，再跑任务；失败则每小时重试直至成功。
+# 用法：本脚本单次运行“等 GPU + 确保 LLM + 执行 pipeline”；crontab 每天 8 点触发，例如：
 #   mkdir -p /path/to/auto-paper-reading/logs
 #   0 8 * * * /path/to/auto-paper-reading/run.sh >> /path/to/auto-paper-reading/logs/run.log 2>&1
-# 可选环境变量：RUN_CONFIG, RUN_TOPICS, MODEL_SERVER_PORT=8000, RETRY_INTERVAL_SEC=3600, HEALTH_WAIT_MAX_SEC=600
+# 被占用时不会抢卡：每 GPU_POLL_SEC 秒看一次，两张卡都空了再启动。
+# 可选环境变量：RUN_CONFIG, RUN_TOPICS, MODEL_SERVER_PORT, GPU_IDS, GPU_POLL_SEC
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+mkdir -p "$SCRIPT_DIR/logs"
+
+LOCK_FILE="$SCRIPT_DIR/logs/run.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] 已有 run.sh 在等待或执行 (lock=$LOCK_FILE)，本次退出"
+  exit 0
+fi
 
 CONFIG="${RUN_CONFIG:-config/config_kexin.yaml}"
 TOPICS="${RUN_TOPICS:-config/topics.yaml}"
 PORT="${MODEL_SERVER_PORT:-8000}"
 RETRY_INTERVAL_SEC="${RETRY_INTERVAL_SEC:-3600}"
-HEALTH_WAIT_MAX_SEC="${HEALTH_WAIT_MAX_SEC:-600}"
+HEALTH_WAIT_MAX_SEC="${HEALTH_WAIT_MAX_SEC:-1200}"
 HEALTH_POLL_SEC="${HEALTH_POLL_SEC:-15}"
 PID_FILE="$SCRIPT_DIR/logs/model_server.pid"
 ENV_PREPARE_PID_FILE="$SCRIPT_DIR/logs/run_env_prepare.pid"
 
-SELF_USER="kec23008"
-GPU_WAIT_SEC="${GPU_WAIT_SEC:-21600}"     # 等他人释放 GPU 的等待时间，默认 6h
-GPU_WAIT_MAX_RETRIES="${GPU_WAIT_MAX_RETRIES:-3}"  # 等他人最多重试次数，超出则放弃当天任务
+SELF_USER="${SELF_USER:-$(whoami)}"
+# Qwen3.8-27B 默认两卡并行；被占用时轮询等待，不设上限（GPU_WAIT_MAX_SEC=0）
+GPU_IDS="${GPU_IDS:-0,1}"
+GPU_POLL_SEC="${GPU_POLL_SEC:-120}"
+GPU_WAIT_MAX_SEC="${GPU_WAIT_MAX_SEC:-0}"
+GPU_BUSY_MIB="${GPU_BUSY_MIB:-100}"
 
 health_ok() {
   curl -sf -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -q 200
 }
 
-# 返回 GPU 0 上占用显存的进程 PID 列表（排除自身 shell 等微小占用）
-gpu0_pids() {
-  nvidia-smi --query-compute-apps=pid,used_gpu_memory \
-    --format=csv,noheader --id=0 2>/dev/null \
-    | awk -F',' '{gsub(/ /,"",$2); if ($2+0 > 100) print $1+0}'
+gpu_id_list() {
+  local raw="${GPU_IDS//,/ }"
+  echo "$raw"
 }
 
-# 等待 GPU 0 空闲，必要时杀掉属于自己的残留进程
-# 若被其他用户占用则每隔 GPU_WAIT_SEC 秒重试，超过 GPU_WAIT_MAX_RETRIES 次则返回 1（放弃当天任务）
-wait_gpu_free() {
-  local other_retries=0
-  while true; do
-    local pids
-    pids=$(gpu0_pids)
-    [[ -z "$pids" ]] && return 0   # GPU 已空闲
+# 返回指定 GPU 上占用显存的进程 PID（排除驱动级微小占用）
+gpu_busy_pids() {
+  local gpu_id="$1"
+  nvidia-smi --query-compute-apps=pid,used_gpu_memory \
+    --format=csv,noheader --id="$gpu_id" 2>/dev/null \
+    | awk -F',' -v min="$GPU_BUSY_MIB" '{gsub(/ /,"",$2); if ($2+0 > min) print $1+0}'
+}
 
-    local other_user_found=0
-    for pid in $pids; do
-      local owner
+gpu_owner_summary() {
+  local id pid owner mem line
+  for id in $(gpu_id_list); do
+    while IFS=',' read -r pid mem; do
+      pid="${pid// /}"
+      mem="${mem// /}"
+      [[ -z "$pid" ]] && continue
       owner=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
-      [[ -z "$owner" ]] && continue   # 进程已消失，忽略
-      if [[ "$owner" == "$SELF_USER" ]]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU 0 被本用户残留进程占用 (PID=$pid)，正在 kill ..."
-        kill "$pid" 2>/dev/null || true
-        sleep 3
-        kill -9 "$pid" 2>/dev/null || true
-      else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU 0 被其他用户 ($owner, PID=$pid) 占用"
-        other_user_found=1
-      fi
+      owner="${owner:-gone}"
+      echo "GPU${id}:${owner}:pid=${pid}:${mem}"
+    done < <(nvidia-smi --query-compute-apps=pid,used_gpu_memory \
+      --format=csv,noheader --id="$id" 2>/dev/null || true)
+  done
+}
+
+# 等待 GPU_IDS 全部空闲。只清理本用户残留，不杀他人进程。
+wait_gpu_free() {
+  local started=$SECONDS
+  local other_found self_killed
+  while true; do
+    other_found=0
+    self_killed=0
+    local id pids pid owner
+    for id in $(gpu_id_list); do
+      pids=$(gpu_busy_pids "$id")
+      for pid in $pids; do
+        owner=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
+        [[ -z "$owner" ]] && continue
+        if [[ "$owner" == "$SELF_USER" ]]; then
+          echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU $id 被本用户残留进程占用 (PID=$pid)，正在 kill ..."
+          kill "$pid" 2>/dev/null || true
+          sleep 3
+          kill -9 "$pid" 2>/dev/null || true
+          self_killed=1
+        else
+          echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU $id 被其他用户 ($owner, PID=$pid) 占用"
+          other_found=1
+        fi
+      done
     done
 
-    if [[ "$other_user_found" -eq 1 ]]; then
-      (( other_retries++ )) || true
-      if (( other_retries > GPU_WAIT_MAX_RETRIES )); then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU 0 等待他人释放已重试 ${GPU_WAIT_MAX_RETRIES} 次，放弃当天任务"
-        return 1
+    if [[ "$other_found" -eq 0 && "$self_killed" -eq 0 ]]; then
+      local leftover=0
+      for id in $(gpu_id_list); do
+        pids=$(gpu_busy_pids "$id")
+        [[ -n "$pids" ]] && leftover=1
+      done
+      if [[ "$leftover" -eq 0 ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU ${GPU_IDS} 空闲，可以启动任务"
+        return 0
       fi
-      echo "[$(date '+%Y-%m-%d %H:%M:%S')] 等待 ${GPU_WAIT_SEC}s 后重试 (${other_retries}/${GPU_WAIT_MAX_RETRIES}) ..."
-      sleep "$GPU_WAIT_SEC"
+    fi
+
+    if (( GPU_WAIT_MAX_SEC > 0 && SECONDS - started >= GPU_WAIT_MAX_SEC )); then
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] 等待 GPU ${GPU_IDS} 已超过 ${GPU_WAIT_MAX_SEC}s，放弃本次任务"
+      return 1
+    fi
+
+    if [[ "$other_found" -eq 1 ]]; then
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU 仍被占用 ($(gpu_owner_summary | tr '\n' ' '))；${GPU_POLL_SEC}s 后再看"
+      sleep "$GPU_POLL_SEC"
     else
-      # 只有自己的进程，杀完后稍等让显存释放
       sleep 5
     fi
   done
@@ -78,9 +123,9 @@ ensure_llm() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] LLM 服务已可用 (port $PORT)"
     return 0
   fi
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] LLM 不可用，检查 GPU 0 占用 ..."
-  wait_gpu_free || return 2   # 2 = GPU 被他人长期占用，放弃
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU 0 空闲，启动 env_prepare.sh ..."
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] LLM 不可用，检查 GPU ${GPU_IDS} 占用 ..."
+  wait_gpu_free || return 2   # 2 = 等待超时
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU ${GPU_IDS} 空闲，启动 env_prepare.sh ..."
   nohup bash "$SCRIPT_DIR/env_prepare.sh" >> "$SCRIPT_DIR/logs/env_prepare_run.log" 2>&1 &
   echo $! > "$ENV_PREPARE_PID_FILE"
   local waited=0
@@ -169,35 +214,40 @@ stop_llm_and_env_prepare() {
     rm -f "$ENV_PREPARE_PID_FILE"
   fi
 
-  # 4) 检查 GPU 0 是否仍有本用户的残留进程（vLLM 子进程未完全退出）
+  # 4) 检查所需 GPU 是否仍有本用户残留进程（vLLM 子进程未完全退出）
   #    只处理属于 SELF_USER 的进程，跳过其他用户（避免误杀他人 GPU 任务）
   sleep 3   # 给进程组一点时间自然退出
-  local gpu_pids
-  gpu_pids=$(gpu0_pids)
-  if [[ -n "$gpu_pids" ]]; then
+  local id gpu_pids pid owner leftover
+  leftover=0
+  for id in $(gpu_id_list); do
+    gpu_pids=$(gpu_busy_pids "$id")
+    [[ -z "$gpu_pids" ]] && continue
     for pid in $gpu_pids; do
-      local owner
       owner=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
       [[ -z "$owner" ]] && continue
       if [[ "$owner" == "$SELF_USER" ]]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU 0 残留本用户进程 (PID=$pid)，kill ..."
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU $id 残留本用户进程 (PID=$pid)，kill ..."
         kill "$pid" 2>/dev/null || true
         sleep 2
         kill -9 "$pid" 2>/dev/null || true
       else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU 0 上发现其他用户进程 ($owner, PID=$pid)，跳过"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU $id 上发现其他用户进程 ($owner, PID=$pid)，跳过"
+        leftover=1
       fi
     done
-    sleep 3
-    # 最终确认
-    gpu_pids=$(gpu0_pids)
-    if [[ -z "$gpu_pids" ]]; then
-      echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU 0 显存已释放"
-    else
-      echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU 0 仍有进程占用 (PID: $gpu_pids)，可能为其他用户，不再干预"
+  done
+  sleep 3
+  leftover=0
+  for id in $(gpu_id_list); do
+    gpu_pids=$(gpu_busy_pids "$id")
+    if [[ -n "$gpu_pids" ]]; then
+      leftover=1
     fi
+  done
+  if [[ "$leftover" -eq 0 ]]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU ${GPU_IDS} 显存已释放"
   else
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU 0 显存已释放"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] GPU ${GPU_IDS} 仍有进程占用，可能为其他用户，不再干预"
   fi
 }
 

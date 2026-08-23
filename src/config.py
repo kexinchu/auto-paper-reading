@@ -85,6 +85,10 @@ def validate_config(c: dict[str, Any]) -> None:
         email_c["use_tls"] = True
     if not isinstance(email_c["use_tls"], bool):
         raise ValueError("config.email.use_tls must be bool")
+    digest_mode = email_c.get("digest_mode", "topic_briefing")
+    if digest_mode not in ("topic_briefing", "per_paper"):
+        raise ValueError("config.email.digest_mode must be 'topic_briefing' or 'per_paper'")
+    email_c["digest_mode"] = digest_mode
 
     # Optional: Google Scholar (enabled + queries; may get captcha without browser)
     if "scholar" in c:
@@ -118,3 +122,16 @@ def validate_config(c: dict[str, Any]) -> None:
                     raise ValueError(f"config.blogs.sources[{i}].url is required")
                 if src.get("type") not in ("rss", "html"):
                     raise ValueError(f"config.blogs.sources[{i}].type must be 'rss' or 'html'")
+
+    if "idea_exploration" in c:
+        ie = c["idea_exploration"]
+        if ie.get("enabled") is not None and not isinstance(ie.get("enabled"), bool):
+            raise ValueError("config.idea_exploration.enabled must be bool")
+        if ie.get("max_ideas") is not None and (
+            not isinstance(ie["max_ideas"], int) or ie["max_ideas"] < 1
+        ):
+            raise ValueError("config.idea_exploration.max_ideas must be a positive int")
+        if ie.get("related_search_enabled") is not None and not isinstance(
+            ie.get("related_search_enabled"), bool
+        ):
+            raise ValueError("config.idea_exploration.related_search_enabled must be bool")

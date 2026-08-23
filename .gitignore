@@ -61,3 +61,7 @@ Thumbs.db
 .env
 *.env
 !.env.example
+
+# Local secrets and runtime data (do not commit SMTP passwords or downloaded PDFs)
+config/config_kexin.yaml
+data/

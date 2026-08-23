@@ -48,7 +48,7 @@ def main() -> int:
     topics_list = load_topics(topics_path)
     model_cfg = config["model"]
     base_url = model_cfg.get("base_url", "http://127.0.0.1:8000/v1").rstrip("/")
-    model_name = model_cfg.get("model_name", "Qwen3.5-35B-A3B-GPTQ-Int4")
+    model_name = model_cfg.get("model_name", "Qwen3.8-27B")
     api_key = model_cfg.get("api_key") or "dummy"
     timeout_s = model_cfg.get("timeout_s", 120)
     enable_thinking = model_cfg.get("enable_thinking", True)

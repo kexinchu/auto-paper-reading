@@ -23,6 +23,39 @@ def test_validate_config_minimal():
     }
     validate_config(c)
     assert c["storage"]["save_text"] is False
+    assert c["email"]["digest_mode"] == "topic_briefing"
+
+
+def test_validate_config_digest_mode_invalid():
+    c = {
+        "arxiv": {"categories": ["cs.LG"], "max_results_per_category": 10, "days_back": 1},
+        "model": {"base_url": "http://localhost/v1", "model_name": "test", "api_key": "x"},
+        "thresholds": {"relevance": 0.8},
+        "storage": {"db_path": "x.db", "pdf_dir": "pdfs", "text_dir": "text", "save_text": False},
+        "email": {
+            "smtp_host": "smtp.x.com", "smtp_port": 587,
+            "from_addr": "a@x.com", "to_addr": "b@x.com", "use_tls": True,
+            "digest_mode": "by_author",
+        },
+    }
+    with pytest.raises(ValueError, match="digest_mode"):
+        validate_config(c)
+
+
+def test_validate_config_idea_exploration_invalid():
+    c = {
+        "arxiv": {"categories": ["cs.LG"], "max_results_per_category": 10, "days_back": 1},
+        "model": {"base_url": "http://localhost/v1", "model_name": "test", "api_key": "x"},
+        "thresholds": {"relevance": 0.8},
+        "storage": {"db_path": "x.db", "pdf_dir": "pdfs", "text_dir": "text", "save_text": False},
+        "email": {
+            "smtp_host": "smtp.x.com", "smtp_port": 587,
+            "from_addr": "a@x.com", "to_addr": "b@x.com", "use_tls": True,
+        },
+        "idea_exploration": {"enabled": True, "max_ideas": 0},
+    }
+    with pytest.raises(ValueError, match="max_ideas"):
+        validate_config(c)
 
 
 def test_validate_config_relevance_bounds():

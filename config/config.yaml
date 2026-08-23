@@ -34,8 +34,9 @@ scholar:
 semantic_scholar:
   enabled: true
   queries:
-    - "large language model reasoning"
-    - "vision language model"
+    - "approximate nearest neighbor vector search"
+    - "CXL memory disaggregation"
+    - "agent operating system runtime"
   limit: 10
   delay_between_queries: 8   # 每个关键词请求间隔(秒)，减小 429
   max_retries_429: 3        # 429 时重试次数
@@ -43,12 +44,14 @@ semantic_scholar:
 model:
   base_url: "http://127.0.0.1:8000/v1"
   api_key: "dummy"
-  model_name: "Qwen3.5-35B-A3B-GPTQ-Int4"  # Stage 2 摘要用大模型
-  # stage1_model_name: "Qwen3.5-9B"         # 可选：Stage 1 分类用小模型（未设置则与 model_name 相同）
+  model_name: "Qwen3.8-27B"  # Stage 2 摘要用大模型
+  # stage1_model_name: "Qwen3.8-27B"       # 可选：Stage 1 分类用小模型（未设置则与 model_name 相同）
   stage1_workers: 1    # Stage 1 并行线程数（单 GPU 推荐 1，多 GPU 可调大）
   stage1_batch_size: 1  # 1=每次只请求 1 篇（减轻 GPU 压力）；>1 时多篇合并一次请求
   temperature: 0
   timeout_s: 120
+  digest_enable_thinking: true
+  digest_max_tokens: 24576
 
 thresholds:
   relevance: 0.6
@@ -69,4 +72,12 @@ email:
   from_addr: "*@163.com"
   to_addr: "*@gmail.com"
   use_tls: true
-  max_papers_per_digest: 10   # 每封最多篇数，超出则分多封发送
+  digest_mode: topic_briefing
+  max_papers_per_digest: 10   # 仅 per_paper 模式拆信时使用
+
+idea_exploration:
+  enabled: true
+  max_ideas: 3
+  related_search_enabled: true
+  related_limit: 5
+  related_delay_s: 8

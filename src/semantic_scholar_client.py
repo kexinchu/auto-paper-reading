@@ -158,3 +158,50 @@ def fetch_papers(
     all_papers.sort(key=lambda p: p.get("citation_count") or 0, reverse=True)
     logger.info("Semantic Scholar total papers fetched: %d (ordered by citation for processing)", len(all_papers))
     return all_papers
+
+
+def search_related(
+    query: str,
+    limit: int = 5,
+    timeout_s: int = 30,
+    api_key: str | None = None,
+    user_agent: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Single-query related-work lookup for idea exploration.
+    Returns compact records: title, year, url, paper_id, abstract.
+    Failures return an empty list (caller continues without external related work).
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+    try:
+        papers = fetch_papers(
+            queries=[q],
+            limit=limit,
+            top_k_by_relevance=limit,
+            timeout_s=timeout_s,
+            delay_between_queries=0,
+            max_retries_429=1,
+            backoff_base_s=20,
+            api_key=api_key,
+            user_agent=user_agent,
+        )
+    except Exception as e:
+        logger.warning("Related-work search failed for %r: %s", q, e)
+        return []
+
+    out: list[dict[str, Any]] = []
+    for p in papers[:limit]:
+        abstract = (p.get("abstract") or "").strip()
+        if abstract.startswith("(No abstract)"):
+            abstract = ""
+        out.append({
+            "paper_id": p.get("arxiv_id", ""),
+            "title": p.get("title", ""),
+            "year": str(p.get("published") or "")[:4],
+            "url": f"https://www.semanticscholar.org/paper/{str(p.get('arxiv_id', '')).removeprefix('semantic_scholar:')}",
+            "abstract": abstract[:280],
+            "citation_count": p.get("citation_count") or 0,
+        })
+    return out

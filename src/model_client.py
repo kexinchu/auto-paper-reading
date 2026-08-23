@@ -732,3 +732,461 @@ def build_stage2_prompt(
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+
+
+def _as_str_list(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    s = str(value).strip()
+    return [s] if s else []
+
+
+def _validate_stage3_data(data: dict[str, Any], paper_ids: list[str]) -> dict[str, Any]:
+    """Validate Stage-3 briefing JSON and keep only known paper_ids."""
+    if not isinstance(data, dict):
+        raise ValueError("Expected a JSON object")
+    data["overview"] = str(data.get("overview") or "").strip()
+    data["thinking"] = str(data.get("thinking") or data.get("reasoning") or "").strip()
+
+    clusters_raw = data.get("clusters")
+    if not isinstance(clusters_raw, list) or not clusters_raw:
+        raise ValueError("Missing or empty 'clusters'")
+
+    known = {str(pid) for pid in paper_ids if pid}
+    seen: set[str] = set()
+    clusters: list[dict[str, Any]] = []
+
+    for i, raw_cluster in enumerate(clusters_raw):
+        if not isinstance(raw_cluster, dict):
+            continue
+        papers: list[dict[str, str]] = []
+        for item in raw_cluster.get("papers") or []:
+            pid = ""
+            one_liner = ""
+            if isinstance(item, dict):
+                pid = str(item.get("paper_id") or "").strip()
+                one_liner = str(item.get("one_liner") or "").strip()
+            elif isinstance(item, str):
+                pid = item.strip()
+            if not pid or pid not in known or pid in seen:
+                continue
+            seen.add(pid)
+            papers.append({"paper_id": pid, "one_liner": one_liner})
+        if not papers:
+            continue
+
+        must_read: list[dict[str, str]] = []
+        for item in raw_cluster.get("must_read") or []:
+            if isinstance(item, dict):
+                pid = str(item.get("paper_id") or "").strip()
+                why = str(item.get("why") or "").strip()
+            elif isinstance(item, str):
+                pid, why = item.strip(), ""
+            else:
+                continue
+            if pid in known:
+                must_read.append({"paper_id": pid, "why": why})
+
+        close_reads: list[dict[str, str]] = []
+        seen_reads: set[str] = set()
+        for item in raw_cluster.get("close_reads") or []:
+            if not isinstance(item, dict):
+                continue
+            pid = str(item.get("paper_id") or "").strip()
+            if not pid or pid not in known or pid in seen_reads:
+                continue
+            seen_reads.add(pid)
+            close_reads.append({
+                "paper_id": pid,
+                "mechanism": str(item.get("mechanism") or "").strip(),
+                "limitation": str(item.get("limitation") or "").strip(),
+                "open_question": str(item.get("open_question") or "").strip(),
+                "why_first": str(item.get("why_first") or "").strip(),
+            })
+            if len(close_reads) >= 3:
+                break
+
+        topic_ids = raw_cluster.get("topic_ids") or []
+        if not isinstance(topic_ids, list):
+            topic_ids = [topic_ids]
+        topic_ids = [str(t).strip() for t in topic_ids if str(t).strip()]
+
+        clusters.append({
+            "cluster_id": str(raw_cluster.get("cluster_id") or f"cluster-{i + 1}"),
+            "title": str(raw_cluster.get("title") or f"主题 {i + 1}").strip(),
+            "topic_ids": topic_ids,
+            "why_grouped": str(raw_cluster.get("why_grouped") or "").strip(),
+            "narrative": str(raw_cluster.get("narrative") or "").strip(),
+            "trends": _as_str_list(raw_cluster.get("trends")),
+            "divergences": _as_str_list(raw_cluster.get("divergences")),
+            "must_read": must_read,
+            "close_reads": close_reads,
+            "papers": papers,
+        })
+
+    if not clusters:
+        raise ValueError("No valid clusters after validation")
+    data["clusters"] = clusters
+    return data
+
+
+def parse_stage3_digest_json(raw: str, paper_ids: list[str]) -> dict[str, Any]:
+    """Parse Stage-3 topic-briefing JSON."""
+    try:
+        s = _normalize_json_raw(raw)
+    except ValueError as e:
+        logger.debug("Stage3 raw (first 400 chars): %r", (raw or "")[:400])
+        raise ValueError(f"Invalid JSON: {e}") from e
+    try:
+        data = _try_parse_json_or_python_dict(s)
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("Stage3 JSON parse error; raw snippet: %r", (raw or "")[:400])
+        raise ValueError(f"Invalid JSON: {e}") from e
+    return _validate_stage3_data(data, paper_ids)
+
+
+def try_parse_stage3_aggressive(
+    raw: str, paper_ids: list[str]
+) -> tuple[dict[str, Any] | None, Exception | None]:
+    """Try multiple extraction strategies for Stage-3. Returns (data, None) or (None, error)."""
+    last_err: Exception = ValueError("Parse failed")
+    try:
+        return parse_stage3_digest_json(raw, paper_ids), None
+    except ValueError as e:
+        last_err = e
+    try:
+        s = raw.strip()
+        s = _strip_think_tags(s)
+        s = _strip_leading_reasoning(s)
+        s = _extract_first_json_object(s)
+        data = _try_parse_json_or_python_dict(s)
+        return _validate_stage3_data(data, paper_ids), None
+    except Exception as e:
+        last_err = e
+    try:
+        start, end = raw.find("{"), raw.rfind("}")
+        if start != -1 and end > start:
+            data = _try_parse_json_or_python_dict(raw[start : end + 1])
+            return _validate_stage3_data(data, paper_ids), None
+    except Exception as e:
+        last_err = e
+    return None, last_err
+
+
+def build_stage3_digest_prompt(
+    topics_config: list[dict],
+    papers_compact: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Build messages for Stage-3: cluster related topics and write a Chinese briefing."""
+    topics_desc = "\n".join(
+        f"- {t['id']}: {t['name']} — {t.get('description', '')}"
+        for t in topics_config
+    )
+    papers_blob = json.dumps(papers_compact, ensure_ascii=False, indent=2)
+    n = len(papers_compact)
+    system = (
+        "你是资深研究助手，负责把一批论文整理成「按研究线索阅读」的中文简报。"
+        "先充分思考交叉主题、方法路线和阅读顺序，再输出最终 JSON。"
+        "综述层做机制对比，不要写成「A做了X、B做了Y」的流水账。"
+        "精读层只挑每条线索里真正值得拆的 2–3 篇，写清机制、局限和开放问题。"
+        "其余论文只用 one_liner。"
+        "最终回复必须是一个合法 JSON 对象：不要 markdown 代码块，不要在 JSON 前后写解释。"
+        "所有字符串字段使用简体中文。"
+    )
+    user = (
+        f"预设主题（可以合并，不要机械地每个主题开一节）：\n{topics_desc}\n\n"
+        f"本批论文（共 {n} 篇，已含问题/方法/挑战/局限/证据）：\n{papers_blob}\n\n"
+        "任务：\n"
+        "1. 根据本批论文的实际内容，把相近 topic 聚成 2–6 条研究线索（cluster）；论文很少时可更少。\n"
+        "2. narrative 写机制对比：共同假设、不同取舍、谁在推进哪一层、还缺什么。250–500 字。\n"
+        "3. 每条线索选 2–3 篇做 close_reads（优先高相关、方法独特、或暴露缺口的）。"
+        "mechanism 要落到数据结构/调度/放置/一致性等具体机制，不要口号。\n"
+        "4. 其余论文只给一句 one_liner。禁止把每篇都写成独立报告。\n"
+        "5. 每个 paper_id 必须且只能出现在一个 cluster 的 papers 里。\n\n"
+        "输出 JSON：\n"
+        '{"overview": "今日整体判断，3-6句，点出真正的技术张力",'
+        ' "thinking": "交叉主题思考：哪些方向在汇合/分化，阅读顺序建议",'
+        ' "clusters": [{'
+        '"cluster_id": "英文短id", "title": "中文线索名",'
+        ' "topic_ids": ["来自预设的id"], "why_grouped": "为何归为一簇",'
+        ' "narrative": "机制对比综述，250-500字",'
+        ' "trends": ["共同方向"], "divergences": ["分歧或不同路线"],'
+        ' "must_read": [{"paper_id": "...", "why": "为何先读"}],'
+        ' "close_reads": [{"paper_id": "...", "mechanism": "这篇实际改了什么机制",'
+        ' "limitation": "没做什么 / 关键假设", "open_question": "由此能追的开放问题",'
+        ' "why_first": "为何精读这篇"}],'
+        ' "papers": [{"paper_id": "...", "one_liner": "一句话要点"}]}]}'
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+_IDEA_DECISIONS = frozenset({"pursue", "watch", "drop"})
+_SCOPE_VERDICTS = frozenset({"too_narrow", "just_right", "too_broad"})
+_NOVELTY = frozenset({"incremental", "moderate", "high"})
+_FEASIBILITY = frozenset({"low", "medium", "high"})
+_RELATIONS = frozenset({"extends", "gaps", "overlaps", "contradicts"})
+
+
+def _clamp01(value: Any, default: float = 0.0) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _validate_idea_item(raw: dict[str, Any], paper_ids: list[str], idx: int) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    title = str(raw.get("title") or "").strip()
+    statement = str(raw.get("statement") or raw.get("idea") or "").strip()
+    if not title and not statement:
+        return None
+    known = {str(pid) for pid in paper_ids if pid}
+
+    related: list[dict[str, str]] = []
+    for item in raw.get("related_papers") or []:
+        if isinstance(item, dict):
+            pid = str(item.get("paper_id") or "").strip()
+            relation = str(item.get("relation") or "overlaps").strip().lower()
+            if relation not in _RELATIONS:
+                relation = "overlaps"
+            if pid in known:
+                related.append({
+                    "paper_id": pid,
+                    "relation": relation,
+                    "note": str(item.get("note") or "").strip(),
+                })
+        elif isinstance(item, str) and item.strip() in known:
+            related.append({"paper_id": item.strip(), "relation": "overlaps", "note": ""})
+
+    external: list[dict[str, Any]] = []
+    for item in raw.get("external_related") or []:
+        if not isinstance(item, dict):
+            continue
+        ext_title = str(item.get("title") or "").strip()
+        if not ext_title:
+            continue
+        external.append({
+            "title": ext_title,
+            "year": str(item.get("year") or "").strip(),
+            "url": str(item.get("url") or "").strip(),
+            "overlap": str(item.get("overlap") or "").strip(),
+        })
+
+    potential_raw = raw.get("potential") if isinstance(raw.get("potential"), dict) else {}
+    novelty = str(potential_raw.get("novelty") or "moderate").strip().lower()
+    feasibility = str(potential_raw.get("feasibility") or "medium").strip().lower()
+    potential = {
+        "score": _clamp01(potential_raw.get("score"), 0.5),
+        "novelty": novelty if novelty in _NOVELTY else "moderate",
+        "impact": str(potential_raw.get("impact") or "").strip(),
+        "feasibility": feasibility if feasibility in _FEASIBILITY else "medium",
+        "why": str(potential_raw.get("why") or "").strip(),
+    }
+
+    scope_raw = raw.get("scope") if isinstance(raw.get("scope"), dict) else {}
+    scope_verdict = str(scope_raw.get("verdict") or "just_right").strip().lower()
+    scope = {
+        "verdict": scope_verdict if scope_verdict in _SCOPE_VERDICTS else "just_right",
+        "horizon": str(scope_raw.get("horizon") or "").strip(),
+        "why": str(scope_raw.get("why") or "").strip(),
+    }
+
+    decision = str(raw.get("decision") or "watch").strip().lower()
+    topic_ids = raw.get("topic_ids") or []
+    if not isinstance(topic_ids, list):
+        topic_ids = [topic_ids]
+    experiments = _as_str_list(raw.get("experiments"))[:4]
+    risks = _as_str_list(raw.get("risks"))[:4]
+
+    return {
+        "idea_id": str(raw.get("idea_id") or f"idea-{idx + 1}"),
+        "title": title or statement[:40],
+        "topic_ids": [str(t).strip() for t in topic_ids if str(t).strip()],
+        "statement": statement,
+        "motivation": str(raw.get("motivation") or "").strip(),
+        "gap": str(raw.get("gap") or "").strip(),
+        "approach_sketch": str(raw.get("approach_sketch") or "").strip(),
+        "experiments": experiments,
+        "risks": risks,
+        "not_a_reimplementation": str(raw.get("not_a_reimplementation") or "").strip(),
+        "search_query": str(raw.get("search_query") or "").strip(),
+        "related_papers": related,
+        "external_related": external,
+        "potential": potential,
+        "scope": scope,
+        "decision": decision if decision in _IDEA_DECISIONS else "watch",
+        "decision_reason": str(raw.get("decision_reason") or "").strip(),
+    }
+
+
+def _validate_ideas_data(data: dict[str, Any], paper_ids: list[str]) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("Expected a JSON object")
+    data["thinking"] = str(data.get("thinking") or data.get("overview") or "").strip()
+    raw_ideas = data.get("ideas")
+    if not isinstance(raw_ideas, list) or not raw_ideas:
+        raise ValueError("Missing or empty 'ideas'")
+    ideas: list[dict[str, Any]] = []
+    for i, item in enumerate(raw_ideas):
+        parsed = _validate_idea_item(item, paper_ids, i)
+        if parsed:
+            ideas.append(parsed)
+    if not ideas:
+        raise ValueError("No valid ideas after validation")
+    data["ideas"] = ideas
+    return data
+
+
+def parse_ideas_json(raw: str, paper_ids: list[str]) -> dict[str, Any]:
+    """Parse Stage-4 idea-exploration JSON."""
+    try:
+        s = _normalize_json_raw(raw)
+    except ValueError as e:
+        logger.debug("Ideas raw (first 400 chars): %r", (raw or "")[:400])
+        raise ValueError(f"Invalid JSON: {e}") from e
+    try:
+        data = _try_parse_json_or_python_dict(s)
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("Ideas JSON parse error; raw snippet: %r", (raw or "")[:400])
+        raise ValueError(f"Invalid JSON: {e}") from e
+    return _validate_ideas_data(data, paper_ids)
+
+
+def try_parse_ideas_aggressive(
+    raw: str, paper_ids: list[str]
+) -> tuple[dict[str, Any] | None, Exception | None]:
+    last_err: Exception = ValueError("Parse failed")
+    try:
+        return parse_ideas_json(raw, paper_ids), None
+    except ValueError as e:
+        last_err = e
+    try:
+        s = raw.strip()
+        s = _strip_think_tags(s)
+        s = _strip_leading_reasoning(s)
+        s = _extract_first_json_object(s)
+        data = _try_parse_json_or_python_dict(s)
+        return _validate_ideas_data(data, paper_ids), None
+    except Exception as e:
+        last_err = e
+    try:
+        start, end = raw.find("{"), raw.rfind("}")
+        if start != -1 and end > start:
+            data = _try_parse_json_or_python_dict(raw[start : end + 1])
+            return _validate_ideas_data(data, paper_ids), None
+    except Exception as e:
+        last_err = e
+    return None, last_err
+
+
+def build_ideas_propose_prompt(
+    topics_config: list[dict],
+    papers_compact: list[dict[str, Any]],
+    briefing: dict[str, Any] | None,
+    max_ideas: int = 3,
+    papers_catalog: list[dict[str, Any]] | None = None,
+) -> list[dict[str, str]]:
+    """Propose research ideas grounded in this batch. Chinese + thinking, JSON only."""
+    topics_desc = "\n".join(
+        f"- {t['id']}: {t['name']} — {t.get('description', '')}"
+        for t in topics_config
+    )
+    cluster_hint = ""
+    if briefing:
+        cluster_hint = json.dumps(
+            {
+                "overview": briefing.get("overview", ""),
+                "thinking": briefing.get("thinking", ""),
+                "clusters": [
+                    {
+                        "title": c.get("title"),
+                        "topic_ids": c.get("topic_ids"),
+                        "narrative": c.get("narrative"),
+                        "trends": c.get("trends"),
+                        "divergences": c.get("divergences"),
+                        "close_reads": c.get("close_reads") or [],
+                    }
+                    for c in (briefing.get("clusters") or [])
+                ],
+            },
+            ensure_ascii=False,
+        )
+    papers_blob = json.dumps(papers_compact, ensure_ascii=False, indent=2)
+    catalog_blob = json.dumps(papers_catalog or [], ensure_ascii=False, indent=2)
+    system = (
+        "你是系统方向的研究员，只做 ANNS / Memory / Agent OS 的 idea exploration。"
+        "先充分思考机制级缺口、失败模式、是否只是复现，再输出 JSON。"
+        "少而深：宁可只给 1–2 个能做实验的 idea，也不要灌水口号。"
+        "每个 idea 必须能指回本批 paper_id，并写清「不是复现因为」。"
+        "拒绝过大口号（「做一个通用 Agent OS」）和纯工程拼装。"
+        "最终只输出一个合法 JSON 对象，字符串用简体中文。"
+    )
+    user = (
+        f"关注主题：\n{topics_desc}\n\n"
+        f"今日脉络与精读（优先从这里挖）：\n{cluster_hint or '（无）'}\n\n"
+        f"精读/高价值论文（深挖用）：\n{papers_blob}\n\n"
+        f"其余论文目录（避免重复已覆盖主张）：\n{catalog_blob or '（无）'}\n\n"
+        f"请提出最多 {max_ideas} 个可跟的 idea。每个必须具体到机制、实验和 4–8 周 scope。\n"
+        "decision 规则（默认观察）：\n"
+        "- pursue：机制级缺口清楚、能写出 2–3 个实验、和已有工作可区分、4–8 周可验证\n"
+        "- watch：有苗头但过新/过挤/证据不足/还只是组合口号\n"
+        "- drop：已被覆盖、scope 离谱、或只是复现/工程拼装\n\n"
+        "输出 JSON：\n"
+        '{"thinking": "探索判断：为什么这几个值得挖、哪些只是口号", "ideas": [{'
+        '"idea_id": "英文短id", "title": "中文短标题",'
+        ' "topic_ids": ["ann-retrieval-systems"],'
+        ' "statement": "一句话想法", "motivation": "从哪些论文/精读来",'
+        ' "gap": "现有工作没做什么，机制上还缺哪一层",'
+        ' "approach_sketch": "准备改哪一层、关键不变量",'
+        ' "experiments": ["实验1：假设/对照/指标", "实验2", "实验3"],'
+        ' "risks": ["最可能失败的原因"],'
+        ' "not_a_reimplementation": "和 paper X 的差异是…",'
+        ' "search_query": "English related-work search query",'
+        ' "related_papers": [{"paper_id": "...", "relation": "extends|gaps|overlaps|contradicts", "note": "..."}],'
+        ' "potential": {"score": 0.0, "novelty": "incremental|moderate|high",'
+        ' "impact": "...", "feasibility": "low|medium|high", "why": "..."},'
+        ' "scope": {"verdict": "too_narrow|just_right|too_broad",'
+        ' "horizon": "4-8 weeks|workshop|conference", "why": "..."},'
+        ' "decision": "pursue|watch|drop", "decision_reason": "..."}]}'
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_ideas_screen_prompt(
+    ideas: list[dict[str, Any]],
+    external_by_idea: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, str]]:
+    """Re-screen ideas after attaching external related-work hits."""
+    payload = []
+    for idea in ideas:
+        item = dict(idea)
+        item["external_hits"] = external_by_idea.get(idea.get("idea_id", ""), [])
+        payload.append(item)
+    system = (
+        "你是严格的 idea 评审。根据外部相关工作更新每个 idea 的潜力和 scope。"
+        "默认观察。只有机制级缺口仍在、实验仍可做、外部工作未覆盖核心主张时才保持 pursue。"
+        "若外部工作已经覆盖核心主张，应降为 watch 或 drop。"
+        "口号型组合（例如「CXL + ANN」但说不清改哪一层）一律 watch 或 drop。"
+        "不要删 idea，必须保留全部 idea_id。"
+        "最终只输出合法 JSON，字符串用简体中文。"
+    )
+    user = (
+        "以下是初筛 idea + 外部检索命中。请更新 gap / experiments / risks / "
+        "not_a_reimplementation / potential / scope / decision / "
+        "decision_reason / external_related（用 overlap 说明和本 idea 的关系）。\n\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
+        "输出 JSON：{\"thinking\": \"...\", \"ideas\": [与输入相同 schema 的对象，保留全部 idea_id]}"
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]

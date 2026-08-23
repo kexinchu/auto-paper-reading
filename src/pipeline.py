@@ -1,5 +1,5 @@
 """
-End-to-end pipeline: fetch -> stage1 (batched, parallel) -> filter -> stage2 -> HTML email.
+End-to-end pipeline: fetch -> stage1 -> filter -> stage2 -> stage3 topic briefing -> one HTML email.
 Idempotent, config-driven, per-paper error handling with status in DB.
 
 Pipeline phases:
@@ -8,8 +8,11 @@ Pipeline phases:
   3. Keyword pre-filter: skip Stage-1 LLM for papers with no topic keyword in abstract
   4. Batched + parallel Stage-1 classification; resume from DB checkpoint if available
   5. Sequential Stage-2 summarization (abstract-only fast path for high-relevance papers)
-  6. Single topic-grouped HTML digest email (recovers any STAGE2_OK from prior failed runs)
-  7. Log run statistics
+  6. Keep only ANNS / memory / Agent OS papers (drop recovered off-focus items)
+  7. Stage-3 topic clustering + Chinese briefing
+  8. Stage-4 idea exploration (related papers, potential, scope)
+  9. Single HTML digest email with briefing + all explored ideas
+  10. Log run statistics
 """
 
 import json
@@ -23,7 +26,7 @@ from typing import Any
 
 from openai import OpenAI
 
-from . import arxiv_client, blog_client, db, emailer, model_client, pdf_utils
+from . import arxiv_client, blog_client, db, digest, emailer, ideas, model_client, pdf_utils
 from .config import load_config
 from .topics import load_topics
 
@@ -298,6 +301,8 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
         "stage2_ok": 0,
         "stage2_failed": 0,
         "emailed": 0,
+        "skipped_off_focus": 0,
+        "ideas_explored": 0,
     }
 
     # ── Phase 1: Filter already-done + keyword pre-filter ─────────────────────
@@ -666,39 +671,135 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
             already_ids.add(pid)
             logger.info("Recovered STAGE2_OK paper for digest: %s", pid)
 
-    # ── Phase 5: Topic-grouped HTML digest email(s); at most N papers per email ──
+    # ── Phase 4b: Keep only current focus topics (ANNS / memory / Agent OS) ──
+    kept, off_focus = ideas.filter_focus_summaries(digest_summaries, topics_list, threshold)
+    for summary in off_focus:
+        pid = summary.get("paper_id")
+        if pid:
+            db.mark_status(db_path, pid, db.SKIPPED, error_message="off-focus topic")
+            logger.info("Dropped off-focus paper from digest: %s", pid)
+    stats["skipped_off_focus"] = len(off_focus)
+    digest_summaries = kept
+    if off_focus:
+        logger.info("Focus filter: kept %d, dropped %d off-topic papers", len(kept), len(off_focus))
+
+    # ── Phase 5: One topic-briefing email (optional per-paper fallback) ────────
     has_papers = bool(digest_summaries)
     has_blogs = bool(blog_posts_for_digest)
     if has_papers or has_blogs:
         email_cfg = config["email"]
-        max_per_email = int(email_cfg.get("max_papers_per_digest", 10))
+        digest_mode = str(email_cfg.get("digest_mode", "topic_briefing"))
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        total = len(digest_summaries)
-        chunks: list[list[dict[str, Any]]] = [
-            digest_summaries[i : i + max_per_email]
-            for i in range(0, total, max_per_email)
-        ] if digest_summaries else [[]]
-        num_emails = len(chunks)
-        for idx, chunk in enumerate(chunks):
-            n = len(chunk)
-            # Build subject line reflecting both papers and blogs
+
+        if digest_mode == "per_paper":
+            max_per_email = int(email_cfg.get("max_papers_per_digest", 10))
+            total = len(digest_summaries)
+            chunks: list[list[dict[str, Any]]] = (
+                [digest_summaries[i : i + max_per_email] for i in range(0, total, max_per_email)]
+                if digest_summaries else [[]]
+            )
+            num_emails = len(chunks)
+            for idx, chunk in enumerate(chunks):
+                n = len(chunk)
+                parts = []
+                if n:
+                    parts.append(f"{n} 篇论文")
+                if blog_posts_for_digest and idx == 0:
+                    parts.append(f"{len(blog_posts_for_digest)} 篇博客")
+                content_desc = " + ".join(parts) if parts else "digest"
+                if num_emails > 1:
+                    subject = f"[AI Digest] {date_str} — {content_desc} (第 {idx + 1}/{num_emails} 封)"
+                else:
+                    subject = f"[AI Digest] {date_str} — {content_desc}"
+                chunk_blogs = blog_posts_for_digest if idx == 0 else None
+                html_body = emailer.format_html_digest(
+                    chunk, date_str, stats,
+                    topics_config=topics_list,
+                    blog_posts=chunk_blogs,
+                )
+                try:
+                    emailer.send_digest_email(
+                        smtp_host=email_cfg["smtp_host"],
+                        smtp_port=email_cfg["smtp_port"],
+                        smtp_user=email_cfg.get("smtp_user", ""),
+                        smtp_password=email_cfg.get("smtp_password", ""),
+                        from_addr=email_cfg["from_addr"],
+                        to_addr=email_cfg["to_addr"],
+                        use_tls=email_cfg["use_tls"],
+                        subject=subject,
+                        body=html_body,
+                        is_html=True,
+                    )
+                    for summary in chunk:
+                        db.mark_status(db_path, summary["paper_id"], db.EMAILED)
+                    if chunk_blogs:
+                        for post in chunk_blogs:
+                            db.mark_blog_status(db_path, post["id"], db.EMAILED)
+                    stats["emailed"] += n
+                    stats["blogs_emailed"] = stats.get("blogs_emailed", 0) + len(chunk_blogs or [])
+                    logger.info(
+                        "Digest email sent: %d papers + %d blogs (part %d/%d) -> %s",
+                        n, len(chunk_blogs or []), idx + 1, num_emails, email_cfg["to_addr"],
+                    )
+                except Exception as e:
+                    logger.exception("Digest email failed (chunk %d/%d): %s", idx + 1, num_emails, e)
+        else:
+            briefing: dict[str, Any] | None = None
+            digest_thinking = model_cfg.get("digest_enable_thinking", True)
+            digest_extra_body = (
+                None if digest_thinking
+                else {"chat_template_kwargs": {"enable_thinking": False}}
+            )
+            if digest_summaries:
+                digest_max_tokens = int(model_cfg.get("digest_max_tokens", 16384))
+                try:
+                    briefing = digest.run_stage3_digest(
+                        client, model_name, digest_summaries, topics_list,
+                        temperature=temperature,
+                        max_tokens=digest_max_tokens,
+                        timeout_s=max(int(timeout_s), 180),
+                        extra_body=digest_extra_body,
+                    )
+                except Exception as e:
+                    logger.exception("Stage3 topic briefing failed; falling back to topic groups: %s", e)
+                    briefing = digest.fallback_digest(digest_summaries, topics_list)
+
+            idea_briefing: dict[str, Any] | None = None
+            idea_cfg = config.get("idea_exploration") or {}
+            if digest_summaries and idea_cfg.get("enabled", True):
+                try:
+                    idea_briefing = ideas.run_idea_exploration(
+                        client, model_name, digest_summaries, topics_list, briefing,
+                        temperature=temperature,
+                        max_tokens=int(model_cfg.get("digest_max_tokens", 16384)),
+                        timeout_s=max(int(timeout_s), 180),
+                        extra_body=digest_extra_body,
+                        max_ideas=int(idea_cfg.get("max_ideas", 3)),
+                        related_search_enabled=bool(idea_cfg.get("related_search_enabled", True)),
+                        related_limit=int(idea_cfg.get("related_limit", 5)),
+                        related_delay_s=float(idea_cfg.get("related_delay_s", 8.0)),
+                        ss_cfg=config.get("semantic_scholar") or {},
+                    )
+                    stats["ideas_explored"] = len((idea_briefing or {}).get("ideas") or [])
+                except Exception as e:
+                    logger.exception("Idea exploration failed; email will omit ideas: %s", e)
+
+            n = len(digest_summaries)
+            n_clusters = len((briefing or {}).get("clusters") or [])
+            n_ideas = len((idea_briefing or {}).get("ideas") or [])
             parts = []
             if n:
-                parts.append(f"{n} 篇论文")
-            # Only include blog count in the first (or only) email chunk
-            if blog_posts_for_digest and idx == 0:
+                parts.append(f"{n_clusters} 条线索 / {n} 篇论文" if n_clusters else f"{n} 篇论文")
+            if n_ideas:
+                parts.append(f"{n_ideas} 个想法")
+            if blog_posts_for_digest:
                 parts.append(f"{len(blog_posts_for_digest)} 篇博客")
             content_desc = " + ".join(parts) if parts else "digest"
-            if num_emails > 1:
-                subject = f"[AI Digest] {date_str} — {content_desc} (第 {idx + 1}/{num_emails} 封)"
-            else:
-                subject = f"[AI Digest] {date_str} — {content_desc}"
-            # Only pass blog posts to first chunk to avoid duplication
-            chunk_blogs = blog_posts_for_digest if idx == 0 else None
-            html_body = emailer.format_html_digest(
-                chunk, date_str, stats,
-                topics_config=topics_list,
-                blog_posts=chunk_blogs,
+            subject = f"[AI 脉络] {date_str} — {content_desc}"
+            html_body = emailer.format_topic_briefing_html(
+                briefing, digest_summaries, date_str, stats,
+                blog_posts=blog_posts_for_digest,
+                idea_briefing=idea_briefing,
             )
             try:
                 emailer.send_digest_email(
@@ -713,18 +814,18 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
                     body=html_body,
                     is_html=True,
                 )
-                for summary in chunk:
+                for summary in digest_summaries:
                     db.mark_status(db_path, summary["paper_id"], db.EMAILED)
-                # Mark blog posts as emailed
-                if chunk_blogs:
-                    for post in chunk_blogs:
-                        db.mark_blog_status(db_path, post["id"], db.EMAILED)
+                for post in blog_posts_for_digest:
+                    db.mark_blog_status(db_path, post["id"], db.EMAILED)
                 stats["emailed"] += n
-                stats["blogs_emailed"] = stats.get("blogs_emailed", 0) + len(chunk_blogs or [])
-                logger.info("Digest email sent: %d papers + %d blogs (part %d/%d) -> %s",
-                            n, len(chunk_blogs or []), idx + 1, num_emails, email_cfg["to_addr"])
+                stats["blogs_emailed"] = len(blog_posts_for_digest)
+                logger.info(
+                    "Topic briefing email sent: %d clusters / %d papers + %d blogs -> %s",
+                    n_clusters, n, len(blog_posts_for_digest), email_cfg["to_addr"],
+                )
             except Exception as e:
-                logger.exception("Digest email failed (chunk %d/%d): %s", idx + 1, num_emails, e)
+                logger.exception("Topic briefing email failed: %s", e)
     else:
         logger.info("No relevant papers or blogs found; no email sent")
 
@@ -733,11 +834,12 @@ def run_pipeline(config_path: str | Path, topics_path: str | Path) -> dict[str, 
     logger.info(
         "Pipeline finished in %.0fs | fetched=%d skipped_existing=%d skipped_keyword=%d "
         "stage1_run=%d stage1_failed=%d relevant=%d abstract_only=%d "
-        "stage2_ok=%d stage2_failed=%d emailed=%d blogs=%d",
+        "stage2_ok=%d stage2_failed=%d skipped_off_focus=%d ideas=%d emailed=%d blogs=%d",
         elapsed,
         stats["total"], stats["skipped_existing"], stats["skipped_keyword"],
         stats["stage1_run"], stats["stage1_failed"], stats["relevant"], stats["abstract_only"],
-        stats["stage2_ok"], stats["stage2_failed"], stats["emailed"],
+        stats["stage2_ok"], stats["stage2_failed"], stats.get("skipped_off_focus", 0),
+        stats.get("ideas_explored", 0), stats["emailed"],
         stats.get("blogs_emailed", 0),
     )
     return stats

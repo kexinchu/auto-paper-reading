@@ -8,8 +8,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urljoin
 
-import arxiv
-
 logger = logging.getLogger(__name__)
 
 # Base URL for PDFs
@@ -65,6 +63,8 @@ def fetch_papers(
     Uses longer backoff on HTTP 429 (rate limit) and a delay between categories to avoid throttling.
     Automatically extends days_back on Mondays to compensate for the weekend gap.
     """
+    import arxiv
+
     days_back = _effective_days_back(days_back)
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
     logger.info("Fetching arXiv papers (days_back=%d, cutoff=%s)", days_back, cutoff.date())
